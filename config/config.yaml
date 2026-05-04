@@ -1,0 +1,21 @@
+app:
+  data_dir: data
+  log_dir: logs
+  database_file: data/hata.db
+  lock_file: data/hatabot.lock
+
+notifications:
+  telegram:
+    enabled: true
+
+sources:
+  - source_key: avito_nsk_family
+    provider: avito
+    enabled: true
+    search_url: "https://www.avito.ru/novosibirsk/kvartiry/sdam-ASgBAgICAUSSA8gQ?context=H4sIAAAAAAAA_wEmANn_YToxOntzOjE6InkiO3M6MTY6IjVNYkJlMWVsejFWNHE2bk0iO319CQQTJgAAAA&district=803-804-809-812&f=ASgBAQECAUSSA8gQAUDMCISYWaKsAaCsAZ6sAZysAZZZlFmSWQJF6AcVeyJmcm9tIjo2MCwidG8iOm51bGx9xpoMGXsiZnJvbSI6NDUwMDAsInRvIjo4NTAwMH0&localPriority=0&s=104"
+    max_pages: 1
+    request_timeout_sec: 20
+    repost_suppression_days: 30
+    user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+    poll_note: "Авито: аренда 3+ комнат, Новосибирск"
+
