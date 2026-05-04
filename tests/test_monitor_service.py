@@ -12,6 +12,7 @@ from hata_bot.state import StateStore
 def make_source() -> SourceConfig:
     return SourceConfig(
         source_key="avito_nsk_family",
+        display_name="Авито",
         provider="avito",
         enabled=True,
         search_url="https://example.com/search",

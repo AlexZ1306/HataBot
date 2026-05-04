@@ -4,6 +4,7 @@ HataBot is a small local utility for monitoring apartment rental search results 
 
 Current MVP:
 - Avito search monitoring
+- Cian search monitoring
 - Telegram notifications
 - SQLite remembered state
 - silent first-run bootstrap
@@ -12,7 +13,7 @@ Current MVP:
 
 ## What It Does
 
-HataBot treats your saved Avito search URL as the source of truth, periodically checks the search results, remembers what it has already seen, suppresses repost duplicates by content fingerprint, and sends Telegram notifications only for new relevant listings.
+HataBot treats your saved search URLs as the source of truth, periodically checks the search results, remembers what it has already seen, suppresses repost duplicates by content fingerprint, and sends Telegram notifications only for new relevant listings.
 
 ## Quick Start
 
@@ -72,6 +73,7 @@ Then open your bot in Telegram and send `/start`.
 - Run manually: `.\scripts\run_once.ps1`
 - Install scheduled task every 10 minutes: `.\scripts\install_task.ps1`
 - Run a specific source: `.\.venv\Scripts\python -m hata_bot run --source avito_nsk_family`
+- Run a specific source: `.\.venv\Scripts\python -m hata_bot run --source cian_nsk_family`
 - Run Telegram button listener now: `.\scripts\run_bot_listener.ps1`
 - Install Telegram button listener at logon: `.\scripts\install_bot_listener_task.ps1`
 
@@ -86,6 +88,9 @@ Then open your bot in Telegram and send `/start`.
 ## Notes
 
 - The current Avito implementation reads the search listing page only and does not open each listing separately.
+- The current Cian implementation uses a real local Chrome/Edge window via DevTools Protocol because direct HTTP access is blocked by Cian WAF. The window starts minimized and off-screen.
+- Cian can be filtered further in code using `required_districts` and `exclude_text_patterns` from `config/config.yaml`.
 - If Avito returns a suspicious response such as CAPTCHA, too few cards, or broken HTML, HataBot refuses to overwrite state.
+- If Cian returns WAF/VPN blocks or too few usable cards, HataBot refuses to overwrite state.
 - Notifications are sent one by one in Telegram.
-- The interactive Telegram bot listens for `/start`, `Проверить сейчас`, `Последнее объявление`, and `Последние 3 объявления`.
+- The interactive Telegram bot starts with a source picker and then gives source-specific buttons: `Проверить сейчас`, `Последнее объявление`, `Последние 3 объявления`, and `Меню`.

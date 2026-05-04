@@ -199,6 +199,9 @@ def build_new_listing_message(listing: Listing, *, poll_note: str | None = None)
 
     if listing.address:
         parts.append(escape(listing.address))
+    district = listing.raw_payload.get("district") if isinstance(listing.raw_payload, dict) else None
+    if district:
+        parts.append(f"Район: {escape(str(district))}")
     if listing.metro:
         parts.append(escape(listing.metro))
     if listing.published_text:

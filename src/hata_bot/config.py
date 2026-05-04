@@ -72,6 +72,7 @@ def get_source(settings: Settings, source_key: str) -> SourceConfig:
 def _parse_source(raw_source: dict) -> SourceConfig:
     try:
         source_key = str(raw_source["source_key"]).strip()
+        display_name = str(raw_source.get("display_name") or source_key).strip()
         provider = str(raw_source["provider"]).strip().lower()
         search_url = str(raw_source["search_url"]).strip()
     except KeyError as exc:
@@ -79,7 +80,9 @@ def _parse_source(raw_source: dict) -> SourceConfig:
 
     if not source_key:
         raise ConfigError("source_key cannot be empty.")
-    if provider not in {"avito"}:
+    if not display_name:
+        raise ConfigError(f"display_name cannot be empty for source {source_key}.")
+    if provider not in {"avito", "cian"}:
         raise ConfigError(f"Unsupported provider '{provider}' for source {source_key}.")
     if not _looks_like_url(search_url):
         raise ConfigError(f"Invalid search_url for source {source_key}: {search_url}")
@@ -98,8 +101,25 @@ def _parse_source(raw_source: dict) -> SourceConfig:
     if not user_agent:
         raise ConfigError(f"user_agent cannot be empty for source {source_key}.")
 
+    required_districts = raw_source.get("required_districts", [])
+    if required_districts is None:
+        required_districts = []
+    if not isinstance(required_districts, list):
+        raise ConfigError(f"required_districts must be a list for source {source_key}.")
+
+    exclude_text_patterns = raw_source.get("exclude_text_patterns", [])
+    if exclude_text_patterns is None:
+        exclude_text_patterns = []
+    if not isinstance(exclude_text_patterns, list):
+        raise ConfigError(f"exclude_text_patterns must be a list for source {source_key}.")
+
+    sort_override = raw_source.get("sort_override")
+    if sort_override is not None:
+        sort_override = str(sort_override).strip() or None
+
     return SourceConfig(
         source_key=source_key,
+        display_name=display_name,
         provider=provider,
         enabled=bool(raw_source.get("enabled", True)),
         search_url=search_url,
@@ -108,6 +128,9 @@ def _parse_source(raw_source: dict) -> SourceConfig:
         repost_suppression_days=repost_days,
         user_agent=user_agent,
         poll_note=str(raw_source.get("poll_note")).strip() if raw_source.get("poll_note") else None,
+        required_districts=[str(item).strip() for item in required_districts if str(item).strip()],
+        exclude_text_patterns=[str(item).strip() for item in exclude_text_patterns if str(item).strip()],
+        sort_override=sort_override,
     )
 
 
@@ -137,4 +160,3 @@ def _infer_project_root(config_file: Path) -> Path:
 def _looks_like_url(value: str) -> bool:
     parsed = urlparse(value)
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
-

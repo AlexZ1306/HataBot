@@ -7,6 +7,7 @@ from hata_bot.exceptions import ConfigError
 from hata_bot.models import Listing, RunResult, Settings, SourceConfig
 from hata_bot.notifiers.base import Notifier
 from hata_bot.providers.avito import AvitoProvider
+from hata_bot.providers.cian import CianProvider
 from hata_bot.state import StateStore
 
 
@@ -115,5 +116,6 @@ class MonitorService:
     def _build_provider(self, source: SourceConfig):
         if source.provider == "avito":
             return AvitoProvider(source)
+        if source.provider == "cian":
+            return CianProvider(source, data_dir=self.settings.app.data_dir)
         raise ConfigError(f"Unsupported provider: {source.provider}")
-

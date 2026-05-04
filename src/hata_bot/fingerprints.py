@@ -41,7 +41,7 @@ def build_content_fingerprint(
 
 
 def parse_rooms_and_area(title: str) -> tuple[int | None, float | None]:
-    rooms_match = re.search(r"(\d+)-к\.", title)
+    rooms_match = re.search(r"(\d+)\s*-(?:к|комн)\.", title, re.IGNORECASE)
     area_match = re.search(r"квартира,\s*([\d,]+)\s*м²", title, re.IGNORECASE)
 
     rooms = int(rooms_match.group(1)) if rooms_match else None

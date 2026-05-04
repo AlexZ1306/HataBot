@@ -26,6 +26,7 @@ class Listing:
 @dataclass(slots=True)
 class SourceConfig:
     source_key: str
+    display_name: str
     provider: str
     enabled: bool
     search_url: str
@@ -34,6 +35,9 @@ class SourceConfig:
     repost_suppression_days: int
     user_agent: str
     poll_note: str | None = None
+    required_districts: list[str] = field(default_factory=list)
+    exclude_text_patterns: list[str] = field(default_factory=list)
+    sort_override: str | None = None
 
 
 @dataclass(slots=True)

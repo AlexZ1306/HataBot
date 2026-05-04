@@ -13,6 +13,7 @@ FIXTURE = Path("tests/fixtures/avito_search_sample.html").read_text(encoding="ut
 def make_source() -> SourceConfig:
     return SourceConfig(
         source_key="avito_nsk_family",
+        display_name="Авито",
         provider="avito",
         enabled=True,
         search_url="https://www.avito.ru/novosibirsk/kvartiry/sdam-ASgBAgICAUSSA8gQ?s=104",

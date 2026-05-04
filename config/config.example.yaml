@@ -10,6 +10,7 @@ notifications:
 
 sources:
   - source_key: avito_nsk_family
+    display_name: "Авито"
     provider: avito
     enabled: true
     search_url: "https://www.avito.ru/novosibirsk/kvartiry/sdam-ASgBAgICAUSSA8gQ?context=H4sIAAAAAAAA_wEmANn_YToxOntzOjE6InkiO3M6MTY6IjVNYkJlMWVsejFWNHE2bk0iO319CQQTJgAAAA&district=803-804-809-812&f=ASgBAQECAUSSA8gQAUDMCISYWaKsAaCsAZ6sAZysAZZZlFmSWQJF6AcVeyJmcm9tIjo2MCwidG8iOm51bGx9xpoMGXsiZnJvbSI6NDUwMDAsInRvIjo4NTAwMH0&localPriority=0&s=104"
@@ -18,4 +19,21 @@ sources:
     repost_suppression_days: 30
     user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
     poll_note: "Авито: аренда 3+ комнат, Новосибирск"
-
+  - source_key: cian_nsk_family
+    display_name: "ЦИАН"
+    provider: cian
+    enabled: true
+    search_url: "https://novosibirsk.cian.ru/cat.php?currency=2&deal_type=rent&engine_version=2&maxprice=85000&minarea=60&minprice=45000&offer_type=flat&region=4598&room3=1&room4=1&room5=1&room6=1&type=4"
+    max_pages: 1
+    request_timeout_sec: 30
+    repost_suppression_days: 30
+    user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+    poll_note: "ЦИАН: аренда 3+ комнат, Новосибирск"
+    sort_override: "creation_date_desc"
+    required_districts:
+      - "Дзержинский"
+      - "Октябрьский"
+      - "Центральный"
+      - "Железнодорожный"
+    exclude_text_patterns:
+      - "На несколько месяцев"

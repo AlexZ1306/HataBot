@@ -3,6 +3,7 @@ from pathlib import Path
 
 from hata_bot.models import AppConfig, Listing, RunResult, Settings, SourceConfig, TelegramConfig
 from hata_bot.services.telegram_control import (
+    BUTTON_MENU,
     BUTTON_CHECK_NOW,
     BUTTON_LAST,
     BUTTON_LAST_THREE,
@@ -11,17 +12,18 @@ from hata_bot.services.telegram_control import (
 from hata_bot.state import StateStore
 
 
-def make_source() -> SourceConfig:
+def make_source(*, source_key: str = "avito_nsk_family", display_name: str = "Авито", provider: str = "avito") -> SourceConfig:
     return SourceConfig(
-        source_key="avito_nsk_family",
-        provider="avito",
+        source_key=source_key,
+        display_name=display_name,
+        provider=provider,
         enabled=True,
         search_url="https://example.com/search",
         max_pages=1,
         request_timeout_sec=20,
         repost_suppression_days=30,
         user_agent="pytest-agent",
-        poll_note="Авито test",
+        poll_note=f"{display_name} test",
     )
 
 
@@ -34,7 +36,14 @@ def make_settings(tmp_path: Path) -> Settings:
         lock_file=tmp_path / "data" / "hatabot.lock",
     )
     telegram = TelegramConfig(enabled=True, bot_token="token", chat_id="1281297580")
-    return Settings(app=app, telegram=telegram, sources=[make_source()])
+    return Settings(
+        app=app,
+        telegram=telegram,
+        sources=[
+            make_source(),
+            make_source(source_key="cian_nsk_family", display_name="ЦИАН", provider="cian"),
+        ],
+    )
 
 
 def make_listing(external_id: str) -> Listing:
@@ -80,12 +89,11 @@ class FakeControlBot(TelegramControlBot):
         self._latest_listings = latest_listings or []
         self._run_results = run_results or []
 
-    def run_monitor_now(self):
+    def run_monitor_now(self, *, source_key: str | None = None):
         return list(self._run_results)
 
-    def fetch_latest_listings(self, *, limit: int):
-        source = self._default_source()
-        return source, self._latest_listings[:limit]
+    def fetch_latest_listings(self, *, source: SourceConfig, limit: int):
+        return self._latest_listings[:limit]
 
 
 def build_bot(tmp_path: Path, *, latest_listings=None, run_results=None):
@@ -109,29 +117,67 @@ def test_start_message_sends_menu(tmp_path: Path) -> None:
     bot.handle_message(chat_id="1281297580", text="/start")
 
     assert "HataBot готов" in notifier.sent_messages[-1]["text"]
-    assert notifier.sent_messages[-1]["reply_markup"] is not None
+    buttons = notifier.sent_messages[-1]["reply_markup"]["keyboard"]
+    assert buttons[0][0]["text"] == "Авито"
+    assert buttons[1][0]["text"] == "ЦИАН"
     state.close()
 
 
-def test_check_now_reports_no_new_items(tmp_path: Path) -> None:
+def test_check_now_requires_source_selection(tmp_path: Path) -> None:
     results = [RunResult("avito_nsk_family", "ok", 50, 0, False, None)]
     bot, notifier, state = build_bot(tmp_path, run_results=results)
 
     bot.handle_message(chat_id="1281297580", text=BUTTON_CHECK_NOW)
 
-    assert "Новых объявлений нет" in notifier.sent_messages[-1]["text"]
+    assert "Сначала выбери источник" in notifier.sent_messages[-1]["text"]
     state.close()
 
 
-def test_latest_buttons_return_listing_text(tmp_path: Path) -> None:
+def test_selecting_source_switches_to_source_menu(tmp_path: Path) -> None:
+    bot, notifier, state = build_bot(tmp_path)
+
+    bot.handle_message(chat_id="1281297580", text="ЦИАН")
+
+    assert "Источник: ЦИАН" in notifier.sent_messages[-1]["text"]
+    rows = notifier.sent_messages[-1]["reply_markup"]["keyboard"]
+    assert rows[-1][0]["text"] == BUTTON_MENU
+    assert state.get_meta("telegram_selected_source") == "cian_nsk_family"
+    state.close()
+
+
+def test_check_now_reports_no_new_items_for_selected_source(tmp_path: Path) -> None:
+    results = [RunResult("cian_nsk_family", "ok", 21, 0, False, None)]
+    bot, notifier, state = build_bot(tmp_path, run_results=results)
+    bot.handle_message(chat_id="1281297580", text="ЦИАН")
+
+    bot.handle_message(chat_id="1281297580", text=BUTTON_CHECK_NOW)
+
+    assert "Проверка ЦИАН завершена" in notifier.sent_messages[-1]["text"]
+    assert "21 карточек" in notifier.sent_messages[-1]["text"]
+    state.close()
+
+
+def test_latest_buttons_return_listing_text_for_selected_source(tmp_path: Path) -> None:
     listings = [make_listing("1"), make_listing("2"), make_listing("3")]
     bot, notifier, state = build_bot(tmp_path, latest_listings=listings)
+    bot.handle_message(chat_id="1281297580", text="Авито")
 
     bot.handle_message(chat_id="1281297580", text=BUTTON_LAST)
     assert notifier.sent_listings[-1]["listing"].external_id == "1"
     assert "Авито test" in notifier.sent_listings[-1]["poll_note"]
 
     bot.handle_message(chat_id="1281297580", text=BUTTON_LAST_THREE)
-    assert "Показываю последние 3 объявления" in notifier.sent_messages[-1]["text"]
+    assert "Показываю последние 3 объявления из Авито" in notifier.sent_messages[-1]["text"]
     assert [item["listing"].external_id for item in notifier.sent_listings[-3:]] == ["1", "2", "3"]
+    state.close()
+
+
+def test_menu_button_returns_to_source_picker(tmp_path: Path) -> None:
+    bot, notifier, state = build_bot(tmp_path)
+    bot.handle_message(chat_id="1281297580", text="Авито")
+
+    bot.handle_message(chat_id="1281297580", text=BUTTON_MENU)
+
+    assert "Выбери источник" in notifier.sent_messages[-1]["text"]
+    assert state.get_meta("telegram_selected_source") == ""
     state.close()

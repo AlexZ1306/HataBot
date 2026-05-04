@@ -20,10 +20,6 @@ class SingleInstanceLock:
     def __enter__(self) -> "SingleInstanceLock":
         self.lock_file.parent.mkdir(parents=True, exist_ok=True)
         self.handle = self.lock_file.open("a+", encoding="utf-8")
-        self.handle.seek(0)
-        self.handle.truncate(0)
-        self.handle.write(str(os.getpid()))
-        self.handle.flush()
 
         try:
             if os.name == "nt":
@@ -35,6 +31,11 @@ class SingleInstanceLock:
             self.handle.close()
             self.handle = None
             raise SingleInstanceError(f"Another HataBot run is already active: {self.lock_file}") from exc
+
+        self.handle.seek(0)
+        self.handle.truncate(0)
+        self.handle.write(str(os.getpid()))
+        self.handle.flush()
 
         return self
 
@@ -50,4 +51,3 @@ class SingleInstanceLock:
         finally:
             self.handle.close()
             self.handle = None
-

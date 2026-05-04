@@ -21,3 +21,6 @@ class NotificationError(HataBotError):
 class SingleInstanceError(HataBotError):
     """Raised when another run is already active."""
 
+
+class BrowserAutomationError(HataBotError):
+    """Raised when a browser-backed fetch strategy fails."""
