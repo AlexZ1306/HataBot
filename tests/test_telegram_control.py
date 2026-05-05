@@ -2,6 +2,7 @@ import logging
 from pathlib import Path
 
 from hata_bot.models import AppConfig, Listing, RunResult, Settings, SourceConfig, TelegramConfig
+from hata_bot.search_profile import load_search_profile
 from hata_bot.services.telegram_control import (
     BUTTON_CHECK_ALL,
     BUTTON_CHECK_NOW,
@@ -12,6 +13,9 @@ from hata_bot.services.telegram_control import (
     BUTTON_MENU,
     BUTTON_RANDOM_PICK,
     BUTTON_SETTINGS,
+    BUTTON_SETTINGS_CHAT,
+    BUTTON_SETTINGS_OPEN_WEB,
+    BUTTON_SETTINGS_WEB,
     RANDOM_PICKER_KEY,
     TelegramControlBot,
 )
@@ -90,11 +94,12 @@ class FakeTelegramNotifier:
 
 
 class FakeControlBot(TelegramControlBot):
-    def __init__(self, *args, latest_listings=None, run_results=None, random_candidates=None, **kwargs):
+    def __init__(self, *args, latest_listings=None, run_results=None, random_candidates=None, webapp_url=None, **kwargs):
         super().__init__(*args, **kwargs)
         self._latest_listings = latest_listings or []
         self._run_results = run_results or []
         self._random_candidates = random_candidates or []
+        self._webapp_url = webapp_url
 
     def run_monitor_now(self, *, source_key: str | None = None):
         return list(self._run_results)
@@ -108,8 +113,11 @@ class FakeControlBot(TelegramControlBot):
     def _ensure_random_pool_refresh_async(self, *, force: bool = False) -> None:
         return None
 
+    def _build_settings_webapp_url(self) -> str | None:
+        return self._webapp_url
 
-def build_bot(tmp_path: Path, *, latest_listings=None, run_results=None, random_candidates=None):
+
+def build_bot(tmp_path: Path, *, latest_listings=None, run_results=None, random_candidates=None, webapp_url=None):
     settings = make_settings(tmp_path)
     state = StateStore(settings.app.database_file)
     state.initialize()
@@ -122,6 +130,7 @@ def build_bot(tmp_path: Path, *, latest_listings=None, run_results=None, random_
         latest_listings=latest_listings,
         run_results=run_results,
         random_candidates=random_candidates,
+        webapp_url=webapp_url,
     )
     return bot, notifier, state
 
@@ -246,9 +255,60 @@ def test_settings_menu_shows_search_profile_summary(tmp_path: Path) -> None:
 
     text = notifier.sent_messages[-1]["text"]
     rows = notifier.sent_messages[-1]["reply_markup"]["keyboard"]
-    assert "Настройки поиска" in text
+    assert "Как удобнее изменить параметры" in text
+    assert rows[0][0]["text"] == BUTTON_SETTINGS_CHAT
+    assert rows[0][1]["text"] == BUTTON_SETTINGS_WEB
+    state.close()
+
+
+def test_settings_chat_choice_opens_existing_chat_flow(tmp_path: Path) -> None:
+    bot, notifier, state = build_bot(tmp_path)
+
+    bot.handle_message(chat_id="1281297580", text=BUTTON_SETTINGS)
+    bot.handle_message(chat_id="1281297580", text=BUTTON_SETTINGS_CHAT)
+
+    text = notifier.sent_messages[-1]["text"]
+    rows = notifier.sent_messages[-1]["reply_markup"]["keyboard"]
     assert "Город: Новосибирск" in text
     assert rows[0][0]["text"] == BUTTON_EDIT_DISTRICTS
+    state.close()
+
+
+def test_settings_web_choice_opens_webapp_button(tmp_path: Path) -> None:
+    bot, notifier, state = build_bot(tmp_path, webapp_url="https://example.com/webapp")
+
+    bot.handle_message(chat_id="1281297580", text=BUTTON_SETTINGS)
+    bot.handle_message(chat_id="1281297580", text=BUTTON_SETTINGS_WEB)
+
+    rows = notifier.sent_messages[-1]["reply_markup"]["keyboard"]
+    assert rows[0][0]["text"] == BUTTON_SETTINGS_OPEN_WEB
+    assert rows[0][0]["web_app"]["url"] == "https://example.com/webapp"
+    state.close()
+
+
+def test_web_app_data_updates_profile(tmp_path: Path) -> None:
+    bot, notifier, state = build_bot(tmp_path)
+
+    bot.handle_update(
+        {
+            "update_id": 1,
+            "message": {
+                "chat": {"id": 1281297580},
+                "web_app_data": {
+                    "data": '{"type":"settings_form_submit","payload":{"districts":["Центральный","Октябрьский"],"min_price_rub":"50000","max_price_rub":"90000","min_area_m2":"65","min_rooms":"4","enabled_source_keys":["cian_nsk_family"]}}'
+                },
+            },
+        }
+    )
+
+    profile = load_search_profile(bot.settings, state)
+    assert profile.districts == ["Октябрьский", "Центральный"]
+    assert profile.min_price_rub == 50000
+    assert profile.max_price_rub == 90000
+    assert profile.min_area_m2 == 65.0
+    assert profile.min_rooms == 4
+    assert profile.enabled_source_keys == ["cian_nsk_family"]
+    assert "Настройки обновил" in notifier.sent_messages[-1]["text"]
     state.close()
 
 

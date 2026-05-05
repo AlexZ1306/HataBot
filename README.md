@@ -104,3 +104,4 @@ Then open your bot in Telegram and send `/start`.
 - If Domclick returns too few usable cards or malformed state, HataBot refuses to overwrite state.
 - Notifications are sent one by one in Telegram.
 - The interactive Telegram bot starts with a source picker and then gives source-specific buttons: `Проверить сейчас`, `Последнее объявление`, `Последние 3 объявления`, and `Меню`.
+- In `Настройки`, you can now choose either the chat flow or a Telegram Web App form. By default the bot builds a public HTTPS URL from the GitHub repo through jsDelivr. If you want to override it, set `HATABOT_SETTINGS_WEBAPP_URL` in `.env`.

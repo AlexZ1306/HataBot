@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import json
 import logging
+import os
 import random
+import re
+import subprocess
 import threading
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlencode
 
 from hata_bot.exceptions import ConfigError, SingleInstanceError
 from hata_bot.locking import SingleInstanceLock
@@ -14,6 +19,7 @@ from hata_bot.school_commute import SchoolCommuteService
 from hata_bot.search_profile import (
     ROOM_OPTIONS,
     SUPPORTED_DISTRICTS,
+    SUPPORTED_CITY_NAME,
     apply_search_profile_to_source,
     default_search_profile,
     format_district_button,
@@ -34,6 +40,9 @@ BUTTON_LAST = "Последнее объявление"
 BUTTON_LAST_THREE = "Последние 3 объявления"
 BUTTON_MENU = "Меню"
 BUTTON_SETTINGS = "Настройки"
+BUTTON_SETTINGS_CHAT = "В чате"
+BUTTON_SETTINGS_WEB = "В окне"
+BUTTON_SETTINGS_OPEN_WEB = "Открыть форму"
 BUTTON_SETTINGS_BACK = "К настройкам"
 BUTTON_EDIT_DISTRICTS = "Районы"
 BUTTON_EDIT_MIN_PRICE = "Цена от"
@@ -50,6 +59,7 @@ SELECTED_SOURCE_KEY = "telegram_selected_source"
 UI_MODE_KEY = "telegram_ui_mode"
 
 UI_MODE_NONE = ""
+UI_MODE_SETTINGS_ENTRY = "settings_entry"
 UI_MODE_SETTINGS = "settings"
 UI_MODE_SETTINGS_DISTRICTS = "settings_districts"
 UI_MODE_SETTINGS_SOURCES = "settings_sources"
@@ -66,6 +76,8 @@ RANDOM_PICK_PAGE_LIMITS = {
     "domclick": (8, 5, 3, 2, 1),
 }
 RANDOM_PICK_CACHE_TTL = timedelta(hours=6)
+WEBAPP_REMOTE_RE = re.compile(r"github\.com[:/](?P<owner>[^/]+)/(?P<repo>[^/.]+?)(?:\.git)?$")
+SETTINGS_WEBAPP_URL_ENV = "HATABOT_SETTINGS_WEBAPP_URL"
 
 
 class TelegramControlBot:
@@ -115,15 +127,22 @@ class TelegramControlBot:
         if not isinstance(message, dict):
             return
 
-        text = message.get("text")
-        if not isinstance(text, str):
-            return
-
         chat = message.get("chat", {})
         chat_id = str(chat.get("id", ""))
         if chat_id not in self.allowed_chat_ids:
             self.logger.warning("Received Telegram update from unauthorized chat_id=%s", chat_id)
             self._handle_unauthorized_chat(chat_id=chat_id)
+            return
+
+        web_app_data = message.get("web_app_data")
+        if isinstance(web_app_data, dict):
+            data = web_app_data.get("data")
+            if isinstance(data, str):
+                self._handle_web_app_data(chat_id=chat_id, data=data)
+                return
+
+        text = message.get("text")
+        if not isinstance(text, str):
             return
 
         self.handle_message(chat_id=chat_id, text=text)
@@ -140,8 +159,7 @@ class TelegramControlBot:
             return
 
         if normalized in {BUTTON_SETTINGS.casefold(), "/settings"}:
-            self._set_ui_mode(chat_id, UI_MODE_SETTINGS)
-            self._send_settings_menu(chat_id)
+            self._send_settings_entry(chat_id)
             return
 
         if normalized in {BUTTON_RANDOM_PICK.casefold(), "/random_pick", "/pick"}:
@@ -195,12 +213,40 @@ class TelegramControlBot:
         )
         self.notifier.send_message(text, chat_id=chat_id, reply_markup=self._source_menu(source))
 
+    def _send_settings_entry(self, chat_id: str, *, prefix: str | None = None) -> None:
+        self._set_ui_mode(chat_id, UI_MODE_SETTINGS_ENTRY)
+        lines = [
+            "<b>Настройки поиска</b>",
+            "Как удобнее изменить параметры?",
+            "Можно продолжить прямо в чате или открыть компактную форму в окне Telegram.",
+        ]
+        if prefix:
+            lines.insert(0, prefix)
+        self.notifier.send_message("\n".join(lines), chat_id=chat_id, reply_markup=self._settings_entry_menu())
+
     def _send_settings_menu(self, chat_id: str, *, prefix: str | None = None) -> None:
         self._set_ui_mode(chat_id, UI_MODE_SETTINGS)
         text = format_search_profile_summary(self._load_profile(), self._all_sources())
         if prefix:
             text = prefix + "\n\n" + text
         self.notifier.send_message(text, chat_id=chat_id, reply_markup=self._settings_menu())
+
+    def _send_settings_webapp_prompt(self, chat_id: str) -> None:
+        url = self._build_settings_webapp_url()
+        if url is None:
+            self.notifier.send_message(
+                "Сейчас не получилось подготовить веб-форму. Можно продолжить настройку в чате.",
+                chat_id=chat_id,
+                reply_markup=self._settings_entry_menu(),
+            )
+            return
+
+        self._set_ui_mode(chat_id, UI_MODE_SETTINGS_ENTRY)
+        text = (
+            "<b>Веб-форма настроек</b>\n"
+            "Открой форму кнопкой ниже, измени параметры и нажми «Сохранить»."
+        )
+        self.notifier.send_message(text, chat_id=chat_id, reply_markup=self._settings_webapp_menu(url))
 
     def _send_districts_menu(self, chat_id: str, *, prefix: str | None = None) -> None:
         self._set_ui_mode(chat_id, UI_MODE_SETTINGS_DISTRICTS)
@@ -518,6 +564,14 @@ class TelegramControlBot:
             self._send_settings_menu(chat_id)
             return True
 
+        if ui_mode == UI_MODE_SETTINGS_ENTRY:
+            if normalized == BUTTON_SETTINGS_CHAT.casefold():
+                self._send_settings_menu(chat_id)
+                return True
+            if normalized == BUTTON_SETTINGS_WEB.casefold():
+                self._send_settings_webapp_prompt(chat_id)
+                return True
+
         if ui_mode == UI_MODE_SETTINGS_DISTRICTS:
             if self._toggle_district(chat_id, text):
                 return True
@@ -688,6 +742,155 @@ class TelegramControlBot:
         self._send_settings_menu(chat_id, prefix="Вернул базовые настройки поиска.")
         return True
 
+    def _handle_web_app_data(self, *, chat_id: str, data: str) -> None:
+        try:
+            payload = json.loads(data)
+        except json.JSONDecodeError:
+            self.notifier.send_message(
+                "Не получилось прочитать данные из формы. Попробуй ещё раз.",
+                chat_id=chat_id,
+                reply_markup=self._settings_entry_menu(),
+            )
+            return
+
+        if not isinstance(payload, dict) or payload.get("type") != "settings_form_submit":
+            self.notifier.send_message(
+                "Получил неизвестные данные из формы. Можно продолжить в чате.",
+                chat_id=chat_id,
+                reply_markup=self._settings_entry_menu(),
+            )
+            return
+
+        profile = self._parse_web_profile_payload(payload.get("payload"))
+        if isinstance(profile, str):
+            self.notifier.send_message(profile, chat_id=chat_id, reply_markup=self._settings_entry_menu())
+            return
+
+        self._save_profile(profile)
+        self._send_settings_entry(chat_id, prefix="Настройки обновил. Изменения уже применяются.")
+
+    def _parse_web_profile_payload(self, raw_payload) -> SearchProfile | str:
+        if not isinstance(raw_payload, dict):
+            return "Форма вернула пустые данные. Попробуй открыть её ещё раз."
+
+        districts_raw = raw_payload.get("districts")
+        if not isinstance(districts_raw, list):
+            return "Нужно выбрать хотя бы один район."
+        districts = [str(item).strip() for item in districts_raw if str(item).strip() in SUPPORTED_DISTRICTS]
+        if not districts:
+            return "Нужно выбрать хотя бы один район."
+        districts = self._sort_districts(districts)
+
+        source_keys_raw = raw_payload.get("enabled_source_keys")
+        if not isinstance(source_keys_raw, list):
+            return "Нужно оставить хотя бы один источник."
+        allowed_source_keys = [source.source_key for source in self.settings.sources]
+        enabled_source_keys = [str(item).strip() for item in source_keys_raw if str(item).strip() in allowed_source_keys]
+        if not enabled_source_keys:
+            return "Нужно оставить хотя бы один источник."
+        enabled_source_keys = self._sort_enabled_sources(enabled_source_keys)
+
+        min_rooms = self._optional_web_int(raw_payload.get("min_rooms"))
+        if min_rooms is None or min_rooms not in ROOM_OPTIONS:
+            return "Сейчас в форме можно выбрать минимум 3, 4 или 5 комнат."
+
+        min_price_rub = self._optional_web_int(raw_payload.get("min_price_rub"))
+        max_price_rub = self._optional_web_int(raw_payload.get("max_price_rub"))
+        min_area_m2 = self._optional_web_float(raw_payload.get("min_area_m2"))
+
+        if min_price_rub is not None and min_price_rub <= 0:
+            return "Цена от должна быть больше нуля."
+        if max_price_rub is not None and max_price_rub <= 0:
+            return "Цена до должна быть больше нуля."
+        if min_area_m2 is not None and min_area_m2 <= 0:
+            return "Площадь должна быть больше нуля."
+        if min_price_rub is not None and max_price_rub is not None and min_price_rub > max_price_rub:
+            return "Цена от не может быть больше цены до."
+
+        return SearchProfile(
+            city_name=SUPPORTED_CITY_NAME,
+            districts=districts,
+            min_price_rub=min_price_rub,
+            max_price_rub=max_price_rub,
+            min_area_m2=min_area_m2,
+            min_rooms=min_rooms,
+            enabled_source_keys=enabled_source_keys,
+        )
+
+    def _build_settings_webapp_url(self) -> str | None:
+        base_url = (os.getenv(SETTINGS_WEBAPP_URL_ENV) or "").strip()
+        if not base_url:
+            repo = self._detect_github_repo()
+            if repo is None:
+                return None
+            branch = self._run_git_command("rev-parse", "--abbrev-ref", "HEAD") or "main"
+            base_url = f"https://cdn.jsdelivr.net/gh/{repo}@{branch}/docs/webapp/index.html"
+
+        profile = self._load_profile()
+        sources_payload = [
+            {"key": source.source_key, "name": source.display_name}
+            for source in self.settings.sources
+        ]
+        query = urlencode(
+            {
+                "city": profile.city_name,
+                "districts": json.dumps(profile.districts, ensure_ascii=False),
+                "min_price_rub": "" if profile.min_price_rub is None else str(profile.min_price_rub),
+                "max_price_rub": "" if profile.max_price_rub is None else str(profile.max_price_rub),
+                "min_area_m2": "" if profile.min_area_m2 is None else str(profile.min_area_m2),
+                "min_rooms": "" if profile.min_rooms is None else str(profile.min_rooms),
+                "enabled_source_keys": json.dumps(profile.enabled_source_keys, ensure_ascii=False),
+                "supported_districts": json.dumps(list(SUPPORTED_DISTRICTS), ensure_ascii=False),
+                "sources": json.dumps(sources_payload, ensure_ascii=False),
+                "v": self._run_git_command("rev-parse", "--short", "HEAD") or "1",
+            },
+            doseq=False,
+        )
+        separator = "&" if "?" in base_url else "?"
+        return f"{base_url}{separator}{query}"
+
+    def _detect_github_repo(self) -> str | None:
+        remote_url = self._run_git_command("config", "--get", "remote.origin.url")
+        if not remote_url:
+            return None
+        match = WEBAPP_REMOTE_RE.search(remote_url.strip())
+        if match is None:
+            return None
+        return f"{match.group('owner')}/{match.group('repo')}"
+
+    def _run_git_command(self, *args: str) -> str | None:
+        try:
+            result = subprocess.run(
+                ["git", *args],
+                cwd=self.settings.app.project_root,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+        except OSError:
+            return None
+        output = (result.stdout or "").strip()
+        return output or None
+
+    @staticmethod
+    def _optional_web_int(value) -> int | None:
+        if value in {None, ""}:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _optional_web_float(value) -> float | None:
+        if value in {None, ""}:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
     def _load_profile(self) -> SearchProfile:
         return load_search_profile(self.settings, self.state)
 
@@ -735,6 +938,28 @@ class TelegramControlBot:
                 [{"text": BUTTON_EDIT_SOURCES}],
                 [{"text": BUTTON_RESET_SETTINGS}],
                 [{"text": BUTTON_MENU}],
+            ],
+            "resize_keyboard": True,
+            "persistent": True,
+        }
+
+    @staticmethod
+    def _settings_entry_menu() -> dict:
+        return {
+            "keyboard": [
+                [{"text": BUTTON_SETTINGS_CHAT}, {"text": BUTTON_SETTINGS_WEB}],
+                [{"text": BUTTON_MENU}],
+            ],
+            "resize_keyboard": True,
+            "persistent": True,
+        }
+
+    @staticmethod
+    def _settings_webapp_menu(url: str) -> dict:
+        return {
+            "keyboard": [
+                [{"text": BUTTON_SETTINGS_OPEN_WEB, "web_app": {"url": url}}],
+                [{"text": BUTTON_SETTINGS_CHAT}, {"text": BUTTON_MENU}],
             ],
             "resize_keyboard": True,
             "persistent": True,
