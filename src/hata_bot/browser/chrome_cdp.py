@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import shutil
 import socket
 import subprocess
 import time
@@ -32,6 +31,7 @@ class ChromeCdpFetcher:
     ) -> str:
         port = self._find_free_port()
         self.profile_dir.mkdir(parents=True, exist_ok=True)
+        startupinfo = self._build_startupinfo()
         process = subprocess.Popen(
             [
                 str(self.chrome_binary),
@@ -40,14 +40,16 @@ class ChromeCdpFetcher:
                 f"--user-data-dir={self.profile_dir}",
                 "--no-first-run",
                 "--no-default-browser-check",
-                "--start-minimized",
-                "--window-position=-2400,0",
+                "--disable-background-timer-throttling",
+                "--disable-backgrounding-occluded-windows",
+                "--disable-renderer-backgrounding",
                 "--window-size=1200,1000",
                 "--new-window",
                 "about:blank",
             ],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            startupinfo=startupinfo,
         )
 
         page_socket = None
@@ -150,6 +152,16 @@ class ChromeCdpFetcher:
             return int(sock.getsockname()[1])
 
     @staticmethod
+    def _build_startupinfo():
+        if subprocess.STARTUPINFO is None:
+            return None
+
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = 0
+        return startupinfo
+
+    @staticmethod
     def _find_chrome_binary() -> Path:
         candidates = [
             Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
@@ -161,4 +173,3 @@ class ChromeCdpFetcher:
             if candidate.exists():
                 return candidate
         raise BrowserAutomationError("Could not find Chrome or Edge browser binary for Cian fetches.")
-
