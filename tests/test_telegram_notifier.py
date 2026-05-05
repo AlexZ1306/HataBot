@@ -18,6 +18,8 @@ def make_listing() -> Listing:
         metro="Площадь Ленина, 11–15 мин.",
         published_text="1 час назад",
         content_fingerprint="fp-1",
+        seller_kind="owner",
+        seller_name="Александр",
         image_url="https://images.example.com/123.jpg",
         photo_urls=["https://images.example.com/123.jpg"],
         raw_payload={},
@@ -32,6 +34,7 @@ def test_build_new_listing_message_contains_key_fields() -> None:
     assert "3 комн." in message
     assert "104,4 м²" in message
     assert "ул. Орджоникидзе, 47" in message
+    assert "🔥 Собственник: Александр" in message
     assert "В выдаче: 1 час назад" in message
 
 

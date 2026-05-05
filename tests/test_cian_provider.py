@@ -38,12 +38,16 @@ def test_parse_listings_from_html_extracts_expected_fields() -> None:
     assert first.address == "ул. Орджоникидзе, 47"
     assert first.metro == "Площадь Ленина, 11–15 мин."
     assert first.published_text == "4 часа назад"
+    assert first.seller_kind == "agency"
+    assert first.seller_name == "БК НЕДВИЖИМОСТЬ"
     assert first.image_url == "https://images.cdn-cian.ru/1/first-photo.jpg"
     assert first.photo_urls == [
         "https://images.cdn-cian.ru/1/first-photo.jpg",
         "https://images.cdn-cian.ru/1/second-photo.jpg",
     ]
     assert first.raw_payload["district"] == "Центральный"
+    assert listings[1].seller_kind == "owner"
+    assert listings[1].seller_name == "Анна"
 
 
 def test_build_search_url_applies_sort_override() -> None:

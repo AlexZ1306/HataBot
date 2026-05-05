@@ -18,6 +18,8 @@ class Listing:
     metro: str | None
     published_text: str | None
     content_fingerprint: str
+    seller_kind: str | None = None
+    seller_name: str | None = None
     image_url: str | None = None
     photo_urls: list[str] = field(default_factory=list)
     raw_payload: dict[str, Any] = field(default_factory=dict)
@@ -53,6 +55,17 @@ class TelegramConfig:
 
 
 @dataclass(slots=True)
+class SearchProfile:
+    city_name: str
+    districts: list[str] = field(default_factory=list)
+    min_price_rub: int | None = None
+    max_price_rub: int | None = None
+    min_area_m2: float | None = None
+    min_rooms: int | None = None
+    enabled_source_keys: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class AppConfig:
     project_root: Path
     data_dir: Path
@@ -82,6 +95,7 @@ class RunResult:
     items_fetched: int
     new_count: int
     bootstrap: bool
+    bootstrap_reason: str | None = None
     error_message: str | None = None
     scanned_count: int | None = None
     matched_count: int | None = None

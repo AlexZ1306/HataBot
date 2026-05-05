@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import base64
+import json
+import re
+from typing import Any
 from html import unescape
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
@@ -11,6 +15,7 @@ from hata_bot.fingerprints import build_content_fingerprint, normalize_text, par
 from hata_bot.http import build_session
 from hata_bot.models import Listing, ProviderFetchStats, SourceConfig
 from hata_bot.providers.base import ListingProvider, listing_matches_source_filters
+from hata_bot.search_profile import AVITO_DISTRICT_IDS
 
 
 class AvitoProvider(ListingProvider):
@@ -74,6 +79,7 @@ class AvitoProvider(ListingProvider):
     def parse_listings_from_html(cls, *, source_key: str, html: str) -> list[Listing]:
         soup = BeautifulSoup(html, "html.parser")
         cards = soup.select('[data-marker="item"][data-item-id]')
+        seller_meta_by_id = cls._extract_seller_metadata_map(html)
         listings: list[Listing] = []
 
         for card in cards:
@@ -111,6 +117,10 @@ class AvitoProvider(ListingProvider):
             specific_params = normalize_text(unescape(params_node.get_text(" ", strip=True))) if params_node else None
             photo_urls = cls._extract_photo_urls(card)
             image_url = photo_urls[0] if photo_urls else None
+            seller_meta = seller_meta_by_id.get(external_id, {})
+            seller_label = normalize_text(str(seller_meta.get("seller_label") or "")) or None
+            seller_name = normalize_text(str(seller_meta.get("seller_name") or "")) or cls._extract_seller_name_from_card(card)
+            seller_kind = cls._classify_seller_kind(seller_label=seller_label, card=card)
 
             fingerprint = build_content_fingerprint(
                 source_key=source_key,
@@ -134,12 +144,15 @@ class AvitoProvider(ListingProvider):
                     metro=metro,
                     published_text=published_text,
                     content_fingerprint=fingerprint,
+                    seller_kind=seller_kind,
+                    seller_name=seller_name,
                     image_url=image_url,
                     photo_urls=photo_urls,
                     raw_payload={
                         "specific_params": specific_params,
                         "published_text": published_text,
                         "address_lines": address_lines,
+                        "seller_label": seller_label,
                         "image_url": image_url,
                         "photo_urls": photo_urls,
                     },
@@ -175,6 +188,143 @@ class AvitoProvider(ListingProvider):
             deduped.append(url)
         return deduped
 
+    @classmethod
+    def _extract_seller_metadata_map(cls, html: str) -> dict[str, dict[str, str | None]]:
+        metadata: dict[str, dict[str, str | None]] = {}
+        cursor = 0
+        id_start_pattern = re.compile(r'\{\s*"id"\s*:')
+
+        while True:
+            match = id_start_pattern.search(html, cursor)
+            if match is None:
+                break
+            start = match.start()
+
+            fragment = cls._extract_json_object_fragment(html, start)
+            if fragment is None:
+                cursor = start + 5
+                continue
+
+            object_text, end = fragment
+            cursor = end
+
+            try:
+                payload = json.loads(object_text)
+            except json.JSONDecodeError:
+                continue
+
+            if not isinstance(payload, dict):
+                continue
+            if "iva" not in payload or "urlPath" not in payload:
+                continue
+
+            external_id = str(payload.get("id") or "").strip()
+            iva = payload.get("iva")
+            if not external_id or not isinstance(iva, dict):
+                continue
+
+            seller_label = cls._extract_iva_step_label(iva.get("SecondLineStep"))
+            seller_name = cls._extract_iva_seller_name(iva.get("UserInfoStep"))
+            if not seller_label and not seller_name:
+                continue
+
+            metadata[external_id] = {
+                "seller_label": seller_label,
+                "seller_name": seller_name,
+            }
+
+        return metadata
+
+    @staticmethod
+    def _extract_json_object_fragment(payload: str, start: int) -> tuple[str, int] | None:
+        if start < 0 or start >= len(payload) or payload[start] != "{":
+            return None
+
+        depth = 0
+        in_string = False
+        escaped = False
+
+        for index in range(start, len(payload)):
+            char = payload[index]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+
+            if char == '"':
+                in_string = True
+                continue
+
+            if char == "{":
+                depth += 1
+                continue
+
+            if char == "}":
+                depth -= 1
+                if depth == 0:
+                    return payload[start : index + 1], index + 1
+
+        return None
+
+    @staticmethod
+    def _extract_iva_step_label(steps: Any) -> str | None:
+        if not isinstance(steps, list):
+            return None
+        for step in steps:
+            if not isinstance(step, dict):
+                continue
+            payload = step.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            value = normalize_text(str(payload.get("value") or ""))
+            if value:
+                return value
+        return None
+
+    @staticmethod
+    def _extract_iva_seller_name(steps: Any) -> str | None:
+        if not isinstance(steps, list):
+            return None
+        for step in steps:
+            if not isinstance(step, dict):
+                continue
+            payload = step.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            profile = payload.get("profile")
+            if not isinstance(profile, dict):
+                continue
+            title = normalize_text(str(profile.get("title") or ""))
+            if title:
+                return title
+        return None
+
+    @staticmethod
+    def _extract_seller_name_from_card(card) -> str | None:
+        seller_link = card.select_one('a[href*="search_seller_info"], a[href*="/brands/"]')
+        if seller_link is None:
+            return None
+        return normalize_text(unescape(seller_link.get_text(" ", strip=True))) or None
+
+    @staticmethod
+    def _classify_seller_kind(*, seller_label: str | None, card) -> str | None:
+        lowered = (seller_label or "").casefold()
+        if "собствен" in lowered or "частн" in lowered:
+            return "owner"
+        if "агент" in lowered:
+            return "agency"
+        if "компан" in lowered:
+            return "company"
+        if "риелтор" in lowered:
+            return "agent"
+        if card.select_one('a[href*="/brands/"]') is not None:
+            return "agency"
+        return None
+
     def _ensure_not_suspicious(self, *, html: str, page: int, url: str) -> None:
         body = html.strip()
         if not body:
@@ -194,10 +344,42 @@ class AvitoProvider(ListingProvider):
             raise SuspiciousResponseError(f"Avito page 1 does not look like a listing page for {url}")
 
     def _build_page_url(self, page: int) -> str:
-        if page <= 1:
-            return self.source.search_url
-
         parsed = urlparse(self.source.search_url)
         query = dict(parse_qsl(parsed.query, keep_blank_values=True))
-        query["p"] = str(page)
+
+        filter_token = query.get("f")
+        if filter_token:
+            query["f"] = self._rewrite_filter_token(filter_token)
+
+        district_ids = [AVITO_DISTRICT_IDS[district] for district in self.source.required_districts if district in AVITO_DISTRICT_IDS]
+        if district_ids:
+            query["district"] = "-".join(district_ids)
+
+        if page > 1:
+            query["p"] = str(page)
+        else:
+            query.pop("p", None)
+
         return urlunparse(parsed._replace(query=urlencode(query)))
+
+    def _rewrite_filter_token(self, token: str) -> str:
+        raw = base64.urlsafe_b64decode(token + "=" * (-len(token) % 4))
+
+        min_area = int(self.source.min_area_m2 or 0)
+        min_price = int(self.source.min_price_rub or 0)
+        max_price = int(self.source.max_price_rub) if self.source.max_price_rub is not None else None
+
+        area_payload = json.dumps({"from": min_area, "to": None}, separators=(",", ":")).encode("utf-8")
+        price_payload = json.dumps({"from": min_price, "to": max_price}, separators=(",", ":")).encode("utf-8")
+
+        pattern = rb'\{"from":\d+,"to":(?:null|\d+)\}'
+        matches = list(re.finditer(pattern, raw))
+        if len(matches) >= 2:
+            raw = self._replace_match(raw, matches[1], price_payload)
+        if len(matches) >= 1:
+            raw = self._replace_match(raw, matches[0], area_payload)
+        return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+    @staticmethod
+    def _replace_match(payload: bytes, match: re.Match[bytes], replacement: bytes) -> bytes:
+        return payload[: match.start()] + replacement + payload[match.end() :]

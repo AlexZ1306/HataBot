@@ -1,4 +1,5 @@
 import logging
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -162,5 +163,26 @@ def test_pending_notification_survives_temporary_failure(tmp_path: Path) -> None
 
     assert result.new_count == 1
     assert success_notifier.sent_ids == ["1002"]
+    assert state.get_pending_notifications("avito_nsk_family") == []
+    state.close()
+
+
+def test_profile_change_reseeds_baseline_without_old_notifications(tmp_path: Path) -> None:
+    baseline = make_listing("1001", "3-к. квартира, 70,9 м², 6/24 эт.", 85000, "ул. Державина, 47", "fp-1")
+    old_match = make_listing("1002", "3-к. квартира, 75 м², 9/12 эт.", 60000, "ул. Есенина, 67", "fp-2")
+    notifier = FakeNotifier()
+    settings, state, service = build_service(tmp_path, FakeProvider([baseline]), notifier)
+
+    service.run_source(settings.sources[0])
+    service.provider_factory = lambda source: FakeProvider([baseline, old_match])
+
+    changed_source = replace(settings.sources[0], min_price_rub=45000, max_price_rub=85000, min_area_m2=60, min_rooms=3)
+    result = service.run_source(changed_source)
+
+    assert result.status == "bootstrap"
+    assert result.bootstrap is True
+    assert result.bootstrap_reason == "profile_changed"
+    assert result.new_count == 0
+    assert notifier.sent_ids == []
     assert state.get_pending_notifications("avito_nsk_family") == []
     state.close()

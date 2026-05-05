@@ -40,6 +40,8 @@ def test_parse_listings_from_html_extracts_expected_fields() -> None:
     assert first.address == "Новосибирск, улица Лескова, 35"
     assert first.metro == "Октябрьская, ~16 мин."
     assert first.raw_payload["district"] == "Октябрьский"
+    assert first.seller_kind == "agency"
+    assert first.seller_name == "Недвижимость Хоум НСК"
     assert first.image_url == "https://img.dmclk.ru/c960x640q80/vitrina/ok1.jpg"
     assert first.photo_urls[1] == "https://img.dmclk.ru/c960x640q80/vitrina/ok2.jpg"
     assert first.published_text is not None
@@ -48,6 +50,8 @@ def test_parse_listings_from_html_extracts_expected_fields() -> None:
     assert second.external_id == "444"
     assert second.raw_payload["district"] == "Железнодорожный"
     assert second.metro == "Красный проспект, ~6 мин."
+    assert second.seller_kind == "owner"
+    assert second.seller_name == "Анастасия"
 
 
 def test_build_search_url_uses_offset_pagination() -> None:

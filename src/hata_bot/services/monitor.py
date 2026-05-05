@@ -9,6 +9,7 @@ from hata_bot.notifiers.base import Notifier
 from hata_bot.providers.avito import AvitoProvider
 from hata_bot.providers.cian import CianProvider
 from hata_bot.providers.domclick import DomclickProvider
+from hata_bot.search_profile import apply_search_profile_to_source, build_source_profile_signature, load_search_profile
 from hata_bot.state import StateStore
 
 
@@ -29,7 +30,8 @@ class MonitorService:
         self.provider_factory = provider_factory or self._build_provider
 
     def run(self, *, source_key: str | None = None) -> list[RunResult]:
-        sources = [self._get_source(source_key)] if source_key else [source for source in self.settings.sources if source.enabled]
+        profile = load_search_profile(self.settings, self.state)
+        sources = [self._get_source(source_key, profile)] if source_key else self._get_enabled_sources(profile)
         results: list[RunResult] = []
         for source in sources:
             results.append(self.run_source(source))
@@ -40,6 +42,7 @@ class MonitorService:
         started_iso = started.replace(microsecond=0).isoformat()
         run_id = self.state.start_run(source.source_key, started_at=started_iso)
         bootstrap = False
+        bootstrap_reason: str | None = None
         items_fetched = 0
         new_count = 0
         scanned_count = 0
@@ -60,18 +63,29 @@ class MonitorService:
                 matched_count = items_fetched
                 pages_checked = source.max_pages
 
-            bootstrap = self.state.count_seen(source.source_key) == 0
+            source_signature = build_source_profile_signature(source)
+            source_signature_key = self._source_signature_key(source.source_key)
+            previous_signature = self.state.get_meta(source_signature_key)
+            existing_count = self.state.count_seen(source.source_key)
+            bootstrap = existing_count == 0 or previous_signature != source_signature
+
             if bootstrap:
-                for listing in listings:
-                    self.state.insert_listing(listing, notification_state="baseline", seen_at=started_iso)
-                self.logger.info("Seeded baseline for %s with %s listings", source.source_key, len(listings))
-                result = RunResult(
+                bootstrap_reason = "initial" if existing_count == 0 else "profile_changed"
+                self._seed_baseline(source, listings, seen_at=started_iso)
+                self.state.set_meta(source_signature_key, source_signature)
+                self.logger.info(
+                    "Seeded baseline for %s with %s listings (reason=%s)",
                     source.source_key,
-                    "bootstrap",
-                    items_fetched,
-                    0,
-                    True,
-                    None,
+                    len(listings),
+                    bootstrap_reason,
+                )
+                result = RunResult(
+                    source_key=source.source_key,
+                    status="bootstrap",
+                    items_fetched=items_fetched,
+                    new_count=0,
+                    bootstrap=True,
+                    bootstrap_reason=bootstrap_reason,
                     scanned_count=scanned_count,
                     matched_count=matched_count,
                     pages_checked=pages_checked,
@@ -83,13 +97,13 @@ class MonitorService:
                     self.notifier.send_new_listing(listing, poll_note=source.poll_note)
                     self.state.mark_notified(source.source_key, listing.external_id, notified_at=started_iso)
                     new_count += 1
+                self.state.set_meta(source_signature_key, source_signature)
                 result = RunResult(
-                    source.source_key,
-                    "ok",
-                    items_fetched,
-                    new_count,
-                    False,
-                    None,
+                    source_key=source.source_key,
+                    status="ok",
+                    items_fetched=items_fetched,
+                    new_count=new_count,
+                    bootstrap=False,
                     scanned_count=scanned_count,
                     matched_count=matched_count,
                     pages_checked=pages_checked,
@@ -140,11 +154,32 @@ class MonitorService:
             state = "suppressed" if recent_duplicate else "pending"
             self.state.insert_listing(listing, notification_state=state, seen_at=seen_at)
 
-    def _get_source(self, source_key: str) -> SourceConfig:
+    def _get_source(self, source_key: str, profile) -> SourceConfig:
         for source in self.settings.sources:
             if source.source_key == source_key:
-                return source
+                return apply_search_profile_to_source(source, profile)
         raise ConfigError(f"Unknown source_key: {source_key}")
+
+    def _get_enabled_sources(self, profile) -> list[SourceConfig]:
+        sources: list[SourceConfig] = []
+        for source in self.settings.sources:
+            effective_source = apply_search_profile_to_source(source, profile)
+            if effective_source.enabled:
+                sources.append(effective_source)
+        return sources
+
+    def _seed_baseline(self, source: SourceConfig, listings: list[Listing], *, seen_at: str) -> None:
+        self.state.suppress_pending_notifications(source.source_key)
+        for listing in listings:
+            existing = self.state.get_listing_row(source.source_key, listing.external_id)
+            if existing:
+                self.state.update_listing_seen(listing, seen_at=seen_at)
+                continue
+            self.state.insert_listing(listing, notification_state="baseline", seen_at=seen_at)
+
+    @staticmethod
+    def _source_signature_key(source_key: str) -> str:
+        return f"search_profile_signature:{source_key}"
 
     def _build_provider(self, source: SourceConfig):
         if source.provider == "avito":

@@ -220,6 +220,9 @@ def build_new_listing_message(listing: Listing, *, poll_note: str | None = None)
         parts.append(f"Район: {escape(str(district))}")
     if listing.metro:
         parts.append(escape(listing.metro))
+    seller_line = _build_seller_line(listing)
+    if seller_line:
+        parts.append(seller_line)
     if listing.published_text:
         parts.append(f"В выдаче: {escape(listing.published_text)}")
 
@@ -242,9 +245,46 @@ def build_listings_digest_message(listings: list[Listing], *, title: str) -> str
             lines.append(escape(listing.address))
         if listing.metro:
             lines.append(escape(listing.metro))
+        seller_line = _build_seller_line(listing)
+        if seller_line:
+            lines.append(seller_line)
         if listing.published_text:
             lines.append(f"В выдаче: {escape(listing.published_text)}")
 
         parts.append("\n".join(lines))
 
     return "\n\n".join(parts)
+
+
+def _build_seller_line(listing: Listing) -> str | None:
+    seller_name = (listing.seller_name or "").strip()
+    raw_payload = listing.raw_payload if isinstance(listing.raw_payload, dict) else {}
+    seller_label = str(raw_payload.get("seller_label") or "").strip()
+
+    if listing.seller_kind == "owner":
+        if seller_name:
+            return f"🔥 Собственник: {escape(seller_name)}"
+        return "🔥 Собственник"
+
+    if listing.seller_kind == "agency":
+        if seller_name:
+            return f"Агентство: {escape(seller_name)}"
+        return "Агентство"
+
+    if listing.seller_kind == "company":
+        if seller_name:
+            return f"Компания: {escape(seller_name)}"
+        return "Компания"
+
+    if listing.seller_kind == "agent":
+        if seller_name:
+            return f"Риелтор: {escape(seller_name)}"
+        return "Риелтор"
+
+    if seller_label and seller_name and seller_label.casefold() != seller_name.casefold():
+        return f"{escape(seller_label)}: {escape(seller_name)}"
+    if seller_label:
+        return escape(seller_label)
+    if seller_name:
+        return f"Продавец: {escape(seller_name)}"
+    return None

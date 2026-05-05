@@ -114,6 +114,7 @@ class CianProvider(ListingProvider):
             published_text = cls._extract_published_text(card)
             photo_urls = cls._extract_photo_urls(card)
             image_url = photo_urls[0] if photo_urls else None
+            seller_kind, seller_name, seller_label = cls._extract_seller_info(card)
 
             fingerprint = build_content_fingerprint(
                 source_key=source.source_key,
@@ -128,6 +129,7 @@ class CianProvider(ListingProvider):
                 "district": district,
                 "details_text": details_text,
                 "geo_labels": geo_labels,
+                "seller_label": seller_label,
                 "image_url": image_url,
                 "photo_urls": photo_urls,
             }
@@ -147,6 +149,8 @@ class CianProvider(ListingProvider):
                     metro=metro,
                     published_text=published_text,
                     content_fingerprint=fingerprint,
+                    seller_kind=seller_kind,
+                    seller_name=seller_name,
                     image_url=image_url,
                     photo_urls=photo_urls,
                     raw_payload=raw_payload,
@@ -158,6 +162,12 @@ class CianProvider(ListingProvider):
     def _build_search_url(self, *, page: int = 1) -> str:
         parsed = urlparse(self.source.search_url)
         query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+
+        self._set_query_number(query, "minprice", self.source.min_price_rub)
+        self._set_query_number(query, "maxprice", self.source.max_price_rub)
+        self._set_query_number(query, "minarea", self.source.min_area_m2)
+        self._apply_room_filters(query)
+
         if self.source.sort_override:
             query["sort"] = self.source.sort_override
         elif "sort" not in query:
@@ -167,6 +177,25 @@ class CianProvider(ListingProvider):
         else:
             query.pop("p", None)
         return urlunparse(parsed._replace(query=urlencode(query)))
+
+    def _apply_room_filters(self, query: dict[str, str]) -> None:
+        for room in range(1, 7):
+            query.pop(f"room{room}", None)
+
+        min_rooms = self.source.min_rooms or 1
+        min_rooms = max(1, min(min_rooms, 6))
+        for room in range(min_rooms, 7):
+            query[f"room{room}"] = "1"
+
+    @staticmethod
+    def _set_query_number(query: dict[str, str], key: str, value: int | float | None) -> None:
+        if value is None:
+            query.pop(key, None)
+            return
+        if isinstance(value, float) and value.is_integer():
+            query[key] = str(int(value))
+            return
+        query[key] = str(value)
 
     @staticmethod
     def _count_cards(html: str) -> int:
@@ -255,6 +284,66 @@ class CianProvider(ListingProvider):
             seen.add(url)
             deduped.append(url)
         return deduped
+
+    @classmethod
+    def _extract_seller_info(cls, card) -> tuple[str | None, str | None, str | None]:
+        parts = [
+            normalize_text(unescape(text))
+            for text in card.stripped_strings
+            if normalize_text(unescape(text))
+        ]
+
+        for index, part in enumerate(parts):
+            seller_kind = cls._classify_seller_kind(part)
+            if seller_kind is None:
+                continue
+
+            seller_name = None
+            for candidate in parts[index + 1 : index + 6]:
+                if cls._is_seller_name_candidate(candidate):
+                    seller_name = candidate
+                    break
+            return seller_kind, seller_name, part
+
+        return None, None, None
+
+    @staticmethod
+    def _classify_seller_kind(value: str) -> str | None:
+        lowered = value.casefold()
+        if "собствен" in lowered or "частное лицо" in lowered:
+            return "owner"
+        if "агентств" in lowered:
+            return "agency"
+        if "риелтор" in lowered or lowered == "агент":
+            return "agent"
+        if "компан" in lowered:
+            return "company"
+        return None
+
+    @staticmethod
+    def _is_seller_name_candidate(value: str) -> bool:
+        lowered = value.casefold()
+        if not value:
+            return False
+        if any(
+            marker in lowered
+            for marker in (
+                "документ",
+                "на рынке",
+                "посмотреть все объекты",
+                "написать",
+                "позвонить",
+                "час",
+                "минут",
+                "вчера",
+                "сегодня",
+                "телефон",
+            )
+        ):
+            return False
+        if re.search(r"\+?\d[\d\s()-]{5,}", value):
+            return False
+        return True
 
     @staticmethod
     def _matches_excluded_text(text: str, patterns: list[str]) -> bool:

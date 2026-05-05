@@ -69,6 +69,25 @@ class StateStore:
                 value TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS picker_seen (
+                picker_key TEXT NOT NULL,
+                listing_key TEXT NOT NULL,
+                source_key TEXT NOT NULL,
+                external_id TEXT NOT NULL,
+                shown_at TEXT NOT NULL,
+                PRIMARY KEY (picker_key, listing_key)
+            );
+
+            CREATE TABLE IF NOT EXISTS picker_candidates (
+                picker_key TEXT NOT NULL,
+                listing_key TEXT NOT NULL,
+                source_key TEXT NOT NULL,
+                external_id TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                refreshed_at TEXT NOT NULL,
+                PRIMARY KEY (picker_key, listing_key)
+            );
             """
         )
         self.connection.commit()
@@ -194,6 +213,31 @@ class StateStore:
         )
         self.connection.commit()
 
+    def suppress_pending_notifications(self, source_key: str) -> None:
+        self.connection.execute(
+            """
+            UPDATE seen_listings
+            SET notification_state = 'suppressed'
+            WHERE source_key = ?
+              AND notification_state = 'pending'
+            """,
+            (source_key,),
+        )
+        self.connection.commit()
+
+    def suppress_listing_notification(self, source_key: str, external_id: str) -> None:
+        self.connection.execute(
+            """
+            UPDATE seen_listings
+            SET notification_state = 'suppressed'
+            WHERE source_key = ?
+              AND external_id = ?
+              AND notification_state = 'pending'
+            """,
+            (source_key, external_id),
+        )
+        self.connection.commit()
+
     def start_run(self, source_key: str, *, started_at: str) -> int:
         cursor = self.connection.execute(
             """
@@ -256,6 +300,92 @@ class StateStore:
         )
         self.connection.commit()
 
+    def get_picker_seen_keys(self, picker_key: str) -> set[str]:
+        rows = self.connection.execute(
+            "SELECT listing_key FROM picker_seen WHERE picker_key = ?",
+            (picker_key,),
+        ).fetchall()
+        return {str(row["listing_key"]) for row in rows}
+
+    def mark_picker_seen(self, *, picker_key: str, listing_key: str, source_key: str, external_id: str, shown_at: str) -> None:
+        self.connection.execute(
+            """
+            INSERT INTO picker_seen (picker_key, listing_key, source_key, external_id, shown_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(picker_key, listing_key) DO UPDATE SET
+                source_key = excluded.source_key,
+                external_id = excluded.external_id,
+                shown_at = excluded.shown_at
+            """,
+            (picker_key, listing_key, source_key, external_id, shown_at),
+        )
+        self.connection.commit()
+
+    def clear_picker_seen(self, picker_key: str) -> None:
+        self.connection.execute(
+            "DELETE FROM picker_seen WHERE picker_key = ?",
+            (picker_key,),
+        )
+        self.connection.commit()
+
+    def replace_picker_candidates(self, *, picker_key: str, listings: list[Listing], refreshed_at: str) -> None:
+        self.connection.execute("DELETE FROM picker_candidates WHERE picker_key = ?", (picker_key,))
+        rows = [
+            (
+                picker_key,
+                listing.content_fingerprint,
+                listing.source_key,
+                listing.external_id,
+                json.dumps(self._serialize_listing(listing), ensure_ascii=False),
+                refreshed_at,
+            )
+            for listing in listings
+        ]
+        self.connection.executemany(
+            """
+            INSERT INTO picker_candidates (picker_key, listing_key, source_key, external_id, payload_json, refreshed_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+        self.connection.commit()
+
+    def get_picker_candidates(self, picker_key: str) -> list[Listing]:
+        rows = self.connection.execute(
+            """
+            SELECT payload_json
+            FROM picker_candidates
+            WHERE picker_key = ?
+            ORDER BY refreshed_at DESC, source_key ASC, external_id ASC
+            """,
+            (picker_key,),
+        ).fetchall()
+        return [self._listing_from_payload_json(row["payload_json"]) for row in rows]
+
+    def get_picker_candidates_refreshed_at(self, picker_key: str) -> str | None:
+        row = self.connection.execute(
+            "SELECT MAX(refreshed_at) AS refreshed_at FROM picker_candidates WHERE picker_key = ?",
+            (picker_key,),
+        ).fetchone()
+        if row is None or row["refreshed_at"] is None:
+            return None
+        return str(row["refreshed_at"])
+
+    def get_seen_listings(self, source_keys: list[str]) -> list[Listing]:
+        if not source_keys:
+            return []
+        placeholders = ", ".join("?" for _ in source_keys)
+        rows = self.connection.execute(
+            f"""
+            SELECT *
+            FROM seen_listings
+            WHERE source_key IN ({placeholders})
+            ORDER BY last_seen_at DESC, first_seen_at DESC
+            """,
+            tuple(source_keys),
+        ).fetchall()
+        return [self._row_to_listing(row) for row in rows]
+
     def _row_to_listing(self, row: sqlite3.Row) -> Listing:
         raw_payload = json.loads(row["raw_payload"]) if row["raw_payload"] else {}
         return Listing(
@@ -270,6 +400,8 @@ class StateStore:
             metro=row["metro"],
             published_text=row["published_text"],
             content_fingerprint=row["content_fingerprint"],
+            seller_kind=raw_payload.get("seller_kind"),
+            seller_name=raw_payload.get("seller_name"),
             image_url=raw_payload.get("image_url"),
             photo_urls=raw_payload.get("photo_urls", []),
             raw_payload=raw_payload,
@@ -278,6 +410,51 @@ class StateStore:
     @staticmethod
     def _serialize_raw_payload(listing: Listing) -> dict:
         payload = dict(listing.raw_payload)
+        payload["seller_kind"] = listing.seller_kind
+        payload["seller_name"] = listing.seller_name
         payload["image_url"] = listing.image_url
         payload["photo_urls"] = list(listing.photo_urls)
         return payload
+
+    @classmethod
+    def _serialize_listing(cls, listing: Listing) -> dict:
+        return {
+            "source_key": listing.source_key,
+            "external_id": listing.external_id,
+            "url": listing.url,
+            "title": listing.title,
+            "price_rub": listing.price_rub,
+            "rooms": listing.rooms,
+            "area_m2": listing.area_m2,
+            "address": listing.address,
+            "metro": listing.metro,
+            "published_text": listing.published_text,
+            "content_fingerprint": listing.content_fingerprint,
+            "seller_kind": listing.seller_kind,
+            "seller_name": listing.seller_name,
+            "image_url": listing.image_url,
+            "photo_urls": list(listing.photo_urls),
+            "raw_payload": cls._serialize_raw_payload(listing),
+        }
+
+    @classmethod
+    def _listing_from_payload_json(cls, payload_json: str) -> Listing:
+        payload = json.loads(payload_json)
+        return Listing(
+            source_key=payload["source_key"],
+            external_id=payload["external_id"],
+            url=payload["url"],
+            title=payload["title"],
+            price_rub=payload.get("price_rub"),
+            rooms=payload.get("rooms"),
+            area_m2=payload.get("area_m2"),
+            address=payload.get("address"),
+            metro=payload.get("metro"),
+            published_text=payload.get("published_text"),
+            content_fingerprint=payload["content_fingerprint"],
+            seller_kind=payload.get("seller_kind"),
+            seller_name=payload.get("seller_name"),
+            image_url=payload.get("image_url"),
+            photo_urls=payload.get("photo_urls", []),
+            raw_payload=payload.get("raw_payload", {}),
+        )

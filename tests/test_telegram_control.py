@@ -4,10 +4,15 @@ from pathlib import Path
 from hata_bot.models import AppConfig, Listing, RunResult, Settings, SourceConfig, TelegramConfig
 from hata_bot.services.telegram_control import (
     BUTTON_CHECK_ALL,
-    BUTTON_MENU,
     BUTTON_CHECK_NOW,
+    BUTTON_EDIT_DISTRICTS,
+    BUTTON_EDIT_MIN_PRICE,
     BUTTON_LAST,
     BUTTON_LAST_THREE,
+    BUTTON_MENU,
+    BUTTON_RANDOM_PICK,
+    BUTTON_SETTINGS,
+    RANDOM_PICKER_KEY,
     TelegramControlBot,
 )
 from hata_bot.state import StateStore
@@ -85,10 +90,11 @@ class FakeTelegramNotifier:
 
 
 class FakeControlBot(TelegramControlBot):
-    def __init__(self, *args, latest_listings=None, run_results=None, **kwargs):
+    def __init__(self, *args, latest_listings=None, run_results=None, random_candidates=None, **kwargs):
         super().__init__(*args, **kwargs)
         self._latest_listings = latest_listings or []
         self._run_results = run_results or []
+        self._random_candidates = random_candidates or []
 
     def run_monitor_now(self, *, source_key: str | None = None):
         return list(self._run_results)
@@ -96,8 +102,14 @@ class FakeControlBot(TelegramControlBot):
     def fetch_latest_listings(self, *, source: SourceConfig, limit: int):
         return self._latest_listings[:limit]
 
+    def fetch_random_candidate_pool(self):
+        return list(self._random_candidates)
 
-def build_bot(tmp_path: Path, *, latest_listings=None, run_results=None):
+    def _ensure_random_pool_refresh_async(self, *, force: bool = False) -> None:
+        return None
+
+
+def build_bot(tmp_path: Path, *, latest_listings=None, run_results=None, random_candidates=None):
     settings = make_settings(tmp_path)
     state = StateStore(settings.app.database_file)
     state.initialize()
@@ -109,6 +121,7 @@ def build_bot(tmp_path: Path, *, latest_listings=None, run_results=None):
         logger=logging.getLogger("test.telegram_control"),
         latest_listings=latest_listings,
         run_results=run_results,
+        random_candidates=random_candidates,
     )
     return bot, notifier, state
 
@@ -120,8 +133,10 @@ def test_start_message_sends_menu(tmp_path: Path) -> None:
     assert "<b>HataBot</b>" in notifier.sent_messages[-1]["text"]
     buttons = notifier.sent_messages[-1]["reply_markup"]["keyboard"]
     assert buttons[0][0]["text"] == BUTTON_CHECK_ALL
-    assert buttons[1][0]["text"] == "Авито"
-    assert buttons[2][0]["text"] == "ЦИАН"
+    assert buttons[1][0]["text"] == BUTTON_RANDOM_PICK
+    assert buttons[2][0]["text"] == "Авито"
+    assert buttons[3][0]["text"] == "ЦИАН"
+    assert buttons[4][0]["text"] == BUTTON_SETTINGS
     state.close()
 
 
@@ -144,7 +159,7 @@ def test_selecting_source_switches_to_source_menu(tmp_path: Path) -> None:
     rows = notifier.sent_messages[-1]["reply_markup"]["keyboard"]
     assert rows[0][0]["text"] == "Проверить ЦИАН"
     assert rows[-1][0]["text"] == BUTTON_MENU
-    assert state.get_meta("telegram_selected_source") == "cian_nsk_family"
+    assert state.get_meta("telegram_selected_source:1281297580") == "cian_nsk_family"
     state.close()
 
 
@@ -184,7 +199,7 @@ def test_menu_button_returns_to_source_picker(tmp_path: Path) -> None:
     bot.handle_message(chat_id="1281297580", text=BUTTON_MENU)
 
     assert "Можно сразу проверить все сервисы" in notifier.sent_messages[-1]["text"]
-    assert state.get_meta("telegram_selected_source") == ""
+    assert state.get_meta("telegram_selected_source:1281297580") == ""
     state.close()
 
 
@@ -221,4 +236,67 @@ def test_unauthorized_chat_gets_help_message_with_chat_id(tmp_path: Path) -> Non
     text = notifier.sent_messages[-1]["text"]
     assert "Этот чат пока не подключён" in text
     assert "777777" in text
+    state.close()
+
+
+def test_settings_menu_shows_search_profile_summary(tmp_path: Path) -> None:
+    bot, notifier, state = build_bot(tmp_path)
+
+    bot.handle_message(chat_id="1281297580", text=BUTTON_SETTINGS)
+
+    text = notifier.sent_messages[-1]["text"]
+    rows = notifier.sent_messages[-1]["reply_markup"]["keyboard"]
+    assert "Настройки поиска" in text
+    assert "Город: Новосибирск" in text
+    assert rows[0][0]["text"] == BUTTON_EDIT_DISTRICTS
+    state.close()
+
+
+def test_settings_can_update_min_price(tmp_path: Path) -> None:
+    bot, notifier, state = build_bot(tmp_path)
+
+    bot.handle_message(chat_id="1281297580", text=BUTTON_SETTINGS)
+    bot.handle_message(chat_id="1281297580", text=BUTTON_EDIT_MIN_PRICE)
+    bot.handle_message(chat_id="1281297580", text="55000")
+
+    text = notifier.sent_messages[-1]["text"]
+    assert "Минимальную цену обновил" in text
+    assert "от 55 000 ₽" in text
+    state.close()
+
+
+def test_district_settings_show_expanded_novosibirsk_districts(tmp_path: Path) -> None:
+    bot, notifier, state = build_bot(tmp_path)
+
+    bot.handle_message(chat_id="1281297580", text=BUTTON_SETTINGS)
+    bot.handle_message(chat_id="1281297580", text=BUTTON_EDIT_DISTRICTS)
+
+    keyboard = notifier.sent_messages[-1]["reply_markup"]["keyboard"]
+    labels = [button["text"] for row in keyboard for button in row]
+    assert any("Заельцовский" in label for label in labels)
+    assert any("Калининский" in label for label in labels)
+    assert any("Кировский" in label for label in labels)
+    assert any("Ленинский" in label for label in labels)
+    assert any("Первомайский" in label for label in labels)
+    assert any("Советский" in label for label in labels)
+    state.close()
+
+
+def test_random_pick_returns_listing_and_remembers_it(tmp_path: Path) -> None:
+    listing = make_listing("7")
+    bot, notifier, state = build_bot(tmp_path)
+    state.replace_picker_candidates(
+        picker_key=RANDOM_PICKER_KEY,
+        listings=[listing],
+        refreshed_at="2026-05-05T00:00:00+00:00",
+    )
+
+    bot.handle_message(chat_id="1281297580", text=BUTTON_RANDOM_PICK)
+
+    assert notifier.sent_listings[-1]["listing"].external_id == "7"
+    assert "Случайный вариант из общего пула" in notifier.sent_listings[-1]["poll_note"]
+    assert listing.content_fingerprint in state.get_picker_seen_keys(RANDOM_PICKER_KEY)
+    row = state.get_listing_row(listing.source_key, listing.external_id)
+    assert row is not None
+    assert row["notification_state"] == "suppressed"
     state.close()

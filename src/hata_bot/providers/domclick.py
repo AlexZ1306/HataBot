@@ -118,6 +118,9 @@ class DomclickProvider(ListingProvider):
         parsed = urlparse(self.source.search_url)
         query = dict(parse_qsl(parsed.query, keep_blank_values=True))
         query["offset"] = str(offset)
+        self._set_query_number(query, "rent_price__gte", self.source.min_price_rub)
+        self._set_query_number(query, "rent_price__lte", self.source.max_price_rub)
+        self._set_query_number(query, "area__gte", self.source.min_area_m2)
         if self.source.sort_override:
             query["sort"] = self.source.sort_override
             query.setdefault("sort_dir", "desc")
@@ -151,6 +154,7 @@ class DomclickProvider(ListingProvider):
         metro = cls._extract_metro_from_card(card, address=address)
         photo_urls = cls._extract_photo_urls(entity)
         image_url = photo_urls[0] if photo_urls else None
+        seller_kind, seller_name, seller_label = cls._extract_seller_info(entity)
         path = entity.get("path") or ""
         if not isinstance(path, str) or not path.startswith("http"):
             return None
@@ -173,6 +177,7 @@ class DomclickProvider(ListingProvider):
             "description": description,
             "published_iso": published_iso,
             "updated_iso": updated_iso,
+            "seller_label": seller_label,
             "image_url": image_url,
             "photo_urls": photo_urls,
         }
@@ -191,6 +196,8 @@ class DomclickProvider(ListingProvider):
             metro=metro,
             published_text=published_text,
             content_fingerprint=fingerprint,
+            seller_kind=seller_kind,
+            seller_name=seller_name,
             image_url=image_url,
             photo_urls=photo_urls,
             raw_payload=raw_payload,
@@ -362,6 +369,37 @@ class DomclickProvider(ListingProvider):
             deduped.append(url)
         return deduped
 
+    @classmethod
+    def _extract_seller_info(cls, entity: dict) -> tuple[str | None, str | None, str | None]:
+        seller = entity.get("seller") or {}
+        agent = seller.get("agent") or {}
+        company = seller.get("company") or {}
+        person = agent.get("person") or {}
+
+        company_name = normalize_text(company.get("displayName"))
+        person_name = normalize_text(person.get("fullName"))
+        agent_name = normalize_text(agent.get("fullName"))
+
+        if entity.get("isOwner"):
+            owner_name = cls._first_non_empty(
+                normalize_text((seller.get("owner") or {}).get("fullName")) if isinstance(seller.get("owner"), dict) else None,
+                person_name,
+                agent_name,
+                company_name,
+            )
+            return "owner", owner_name, "Собственник"
+
+        if agent.get("isAgency"):
+            return "agency", company_name or agent_name or person_name, "Агентство"
+
+        if company_name:
+            return "company", company_name, "Компания"
+
+        if agent.get("isAgent") or person_name or agent_name:
+            return "agent", person_name or agent_name, "Риелтор"
+
+        return None, None, None
+
     @staticmethod
     def _compose_title(*, rooms: int | None, area_m2: float | None, floor: int | None, floors: int | None) -> str:
         parts: list[str] = []
@@ -457,3 +495,20 @@ class DomclickProvider(ListingProvider):
             return float(value)
         except (TypeError, ValueError):
             return None
+
+    @staticmethod
+    def _first_non_empty(*values: str | None) -> str | None:
+        for value in values:
+            if value:
+                return value
+        return None
+
+    @staticmethod
+    def _set_query_number(query: dict[str, str], key: str, value: int | float | None) -> None:
+        if value is None:
+            query.pop(key, None)
+            return
+        if isinstance(value, float) and value.is_integer():
+            query[key] = str(int(value))
+            return
+        query[key] = str(value)
