@@ -11,6 +11,8 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
+import requests
+
 from hata_bot.exceptions import ConfigError, SingleInstanceError
 from hata_bot.locking import SingleInstanceLock
 from hata_bot.models import Listing, RunResult, SearchProfile, Settings, SourceConfig
@@ -823,8 +825,13 @@ class TelegramControlBot:
             repo = self._detect_github_repo()
             if repo is None:
                 return None
-            branch = self._run_git_command("rev-parse", "--abbrev-ref", "HEAD") or "main"
-            base_url = f"https://cdn.jsdelivr.net/gh/{repo}@{branch}/docs/webapp/index.html"
+            owner, repo_name = repo.split("/", 1)
+            pages_url = f"https://{owner.lower()}.github.io/{repo_name}/webapp/"
+            if self._url_looks_ready(pages_url):
+                base_url = pages_url
+            else:
+                branch = self._run_git_command("rev-parse", "--abbrev-ref", "HEAD") or "main"
+                base_url = f"https://rawcdn.githack.com/{repo}/{branch}/docs/webapp/index.html"
 
         profile = self._load_profile()
         sources_payload = [
@@ -872,6 +879,15 @@ class TelegramControlBot:
             return None
         output = (result.stdout or "").strip()
         return output or None
+
+    @staticmethod
+    def _url_looks_ready(url: str) -> bool:
+        try:
+            response = requests.get(url, timeout=4)
+        except requests.RequestException:
+            return False
+        content_type = (response.headers.get("content-type") or "").lower()
+        return response.status_code == 200 and "text/html" in content_type
 
     @staticmethod
     def _optional_web_int(value) -> int | None:

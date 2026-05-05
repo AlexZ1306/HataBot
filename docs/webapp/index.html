@@ -7,15 +7,15 @@
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
     :root {
-      color-scheme: light dark;
-      --bg: #f4f5f7;
+      color-scheme: light;
+      --bg: #f6f3ee;
       --surface: #ffffff;
-      --text: #171717;
-      --muted: #666c75;
-      --line: #d9dde3;
-      --accent: #0f6fff;
+      --text: #2b2824;
+      --muted: #746d65;
+      --line: #e5ddd2;
+      --accent: #356859;
       --danger: #cb3d3d;
-      --chip: #f0f3f7;
+      --chip: #fbfaf8;
     }
 
     * {
@@ -55,10 +55,10 @@
     .card {
       background: var(--surface);
       border: 1px solid var(--line);
-      border-radius: 16px;
+      border-radius: 18px;
       padding: 16px;
       margin-bottom: 14px;
-      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.04);
+      box-shadow: 0 10px 30px rgba(65, 52, 36, 0.05);
     }
 
     .section-title {
@@ -97,7 +97,7 @@
       padding: 12px 13px;
       font: inherit;
       color: var(--text);
-      background: var(--surface);
+      background: #fffdfa;
     }
 
     .chips {
@@ -157,7 +157,7 @@
 
     .room-option.active {
       border-color: var(--accent);
-      background: rgba(15, 111, 255, 0.08);
+      background: rgba(53, 104, 89, 0.08);
       color: var(--accent);
     }
 
@@ -310,19 +310,6 @@
     const roomsRoot = document.getElementById("rooms");
     const errorBox = document.getElementById("error");
 
-    function applyTheme() {
-      if (!tg) return;
-      const theme = tg.themeParams || {};
-      const root = document.documentElement;
-      if (theme.bg_color) root.style.setProperty("--bg", theme.secondary_bg_color || theme.bg_color);
-      if (theme.secondary_bg_color) root.style.setProperty("--chip", theme.secondary_bg_color);
-      if (theme.text_color) root.style.setProperty("--text", theme.text_color);
-      if (theme.hint_color) root.style.setProperty("--muted", theme.hint_color);
-      if (theme.button_color) root.style.setProperty("--accent", theme.button_color);
-      if (theme.button_text_color) root.style.setProperty("--button-text", theme.button_text_color);
-      if (theme.section_bg_color) root.style.setProperty("--surface", theme.section_bg_color);
-    }
-
     function renderCheckboxGroup(root, items, selectedSet, formatter) {
       root.innerHTML = "";
       items.forEach((item) => {
@@ -436,8 +423,6 @@
         tg.ready();
         tg.expand();
       }
-
-      applyTheme();
 
       cityInput.value = model.city;
       minPriceInput.value = model.minPrice;
