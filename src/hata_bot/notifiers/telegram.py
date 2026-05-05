@@ -24,7 +24,7 @@ class TelegramNotifier(Notifier):
             raise ConfigError("Telegram notifier is disabled in configuration.")
         if not config.bot_token:
             raise ConfigError("HATABOT_TELEGRAM_BOT_TOKEN is missing.")
-        if not config.chat_id:
+        if not self._resolve_default_chat_ids(config):
             raise ConfigError("HATABOT_TELEGRAM_CHAT_ID is missing.")
 
         self.config = config
@@ -52,16 +52,17 @@ class TelegramNotifier(Notifier):
         chat_id: str | None = None,
         reply_markup: dict | None = None,
     ) -> None:
-        payload = {
-            "chat_id": chat_id or self.config.chat_id,
-            "text": text,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": True,
-        }
-        if reply_markup is not None:
-            payload["reply_markup"] = reply_markup
-        response = self.session.post(f"{self.base_url}/sendMessage", json=payload, timeout=15)
-        self._parse_response(response)
+        for target_chat_id in self._target_chat_ids(chat_id):
+            payload = {
+                "chat_id": target_chat_id,
+                "text": text,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+            }
+            if reply_markup is not None:
+                payload["reply_markup"] = reply_markup
+            response = self.session.post(f"{self.base_url}/sendMessage", json=payload, timeout=15)
+            self._parse_response(response)
 
     def send_listing(
         self,
@@ -93,16 +94,17 @@ class TelegramNotifier(Notifier):
         chat_id: str | None = None,
         reply_markup: dict | None = None,
     ) -> None:
-        payload = {
-            "chat_id": chat_id or self.config.chat_id,
-            "photo": photo_url,
-            "caption": caption,
-            "parse_mode": "HTML",
-        }
-        if reply_markup is not None:
-            payload["reply_markup"] = reply_markup
-        response = self.session.post(f"{self.base_url}/sendPhoto", json=payload, timeout=20)
-        self._parse_response(response)
+        for target_chat_id in self._target_chat_ids(chat_id):
+            payload = {
+                "chat_id": target_chat_id,
+                "photo": photo_url,
+                "caption": caption,
+                "parse_mode": "HTML",
+            }
+            if reply_markup is not None:
+                payload["reply_markup"] = reply_markup
+            response = self.session.post(f"{self.base_url}/sendPhoto", json=payload, timeout=20)
+            self._parse_response(response)
 
     def send_photo_from_url(
         self,
@@ -132,19 +134,20 @@ class TelegramNotifier(Notifier):
         chat_id: str | None = None,
         reply_markup: dict | None = None,
     ) -> None:
-        data: dict[str, object] = {
-            "chat_id": chat_id or self.config.chat_id,
-            "caption": caption,
-            "parse_mode": "HTML",
-        }
-        if reply_markup is not None:
-            data["reply_markup"] = json.dumps(reply_markup, ensure_ascii=False)
+        for target_chat_id in self._target_chat_ids(chat_id):
+            data: dict[str, object] = {
+                "chat_id": target_chat_id,
+                "caption": caption,
+                "parse_mode": "HTML",
+            }
+            if reply_markup is not None:
+                data["reply_markup"] = json.dumps(reply_markup, ensure_ascii=False)
 
-        files = {
-            "photo": (filename, content, content_type),
-        }
-        response = self.session.post(f"{self.base_url}/sendPhoto", data=data, files=files, timeout=30)
-        self._parse_response(response)
+            files = {
+                "photo": (filename, content, content_type),
+            }
+            response = self.session.post(f"{self.base_url}/sendPhoto", data=data, files=files, timeout=30)
+            self._parse_response(response)
 
     def _download_photo(self, photo_url: str) -> tuple[str, str, bytes]:
         response = self.session.get(photo_url, timeout=20)
@@ -182,6 +185,19 @@ class TelegramNotifier(Notifier):
             raise NotificationError(f"Telegram API error: {description}")
 
         return data
+
+    @staticmethod
+    def _resolve_default_chat_ids(config: TelegramConfig) -> list[str]:
+        if config.chat_ids:
+            return [item for item in config.chat_ids if item]
+        if config.chat_id:
+            return [config.chat_id]
+        return []
+
+    def _target_chat_ids(self, chat_id: str | None) -> list[str]:
+        if chat_id:
+            return [chat_id]
+        return self._resolve_default_chat_ids(self.config)
 
 
 def build_new_listing_message(listing: Listing, *, poll_note: str | None = None) -> str:

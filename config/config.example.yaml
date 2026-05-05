@@ -19,16 +19,24 @@ sources:
     repost_suppression_days: 30
     user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
     poll_note: "Авито: аренда 3+ комнат, Новосибирск"
+    min_price_rub: 45000
+    max_price_rub: 85000
+    min_area_m2: 60
+    min_rooms: 3
   - source_key: cian_nsk_family
     display_name: "ЦИАН"
     provider: cian
     enabled: true
     search_url: "https://novosibirsk.cian.ru/cat.php?currency=2&deal_type=rent&engine_version=2&maxprice=85000&minarea=60&minprice=45000&offer_type=flat&region=4598&room3=1&room4=1&room5=1&room6=1&type=4"
-    max_pages: 1
+    max_pages: 2
     request_timeout_sec: 30
     repost_suppression_days: 30
     user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
     poll_note: "ЦИАН: аренда 3+ комнат, Новосибирск"
+    min_price_rub: 45000
+    max_price_rub: 85000
+    min_area_m2: 60
+    min_rooms: 3
     sort_override: "creation_date_desc"
     required_districts:
       - "Дзержинский"
@@ -37,3 +45,22 @@ sources:
       - "Железнодорожный"
     exclude_text_patterns:
       - "На несколько месяцев"
+  - source_key: domclick_nsk_family
+    display_name: "Домклик"
+    provider: domclick
+    enabled: true
+    search_url: "https://novosibirsk.domclick.ru/search?deal_type=rent&category=living&offer_type=flat&aids=300001159&aids=48793&aids=48754&aids=17388144&rent_price__gte=45000&rent_price__lte=85000&area__gte=60&offset=0"
+    max_pages: 2
+    request_timeout_sec: 40
+    repost_suppression_days: 30
+    user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+    poll_note: "Домклик: аренда 3+ комнат, Новосибирск"
+    min_price_rub: 45000
+    max_price_rub: 85000
+    min_area_m2: 60
+    min_rooms: 3
+    required_districts:
+      - "Дзержинский"
+      - "Октябрьский"
+      - "Центральный"
+      - "Железнодорожный"

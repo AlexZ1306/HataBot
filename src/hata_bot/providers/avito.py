@@ -9,8 +9,8 @@ from bs4 import BeautifulSoup
 from hata_bot.exceptions import ProviderError, SuspiciousResponseError
 from hata_bot.fingerprints import build_content_fingerprint, normalize_text, parse_rooms_and_area
 from hata_bot.http import build_session
-from hata_bot.models import Listing, SourceConfig
-from hata_bot.providers.base import ListingProvider
+from hata_bot.models import Listing, ProviderFetchStats, SourceConfig
+from hata_bot.providers.base import ListingProvider, listing_matches_source_filters
 
 
 class AvitoProvider(ListingProvider):
@@ -29,10 +29,12 @@ class AvitoProvider(ListingProvider):
     def __init__(self, source: SourceConfig, session: requests.Session | None = None) -> None:
         self.source = source
         self.session = session or build_session(user_agent=source.user_agent)
+        self.last_fetch_stats = ProviderFetchStats(scanned_count=0, matched_count=0, pages_checked=0)
 
     def fetch(self) -> list[Listing]:
         listings: list[Listing] = []
         seen_ids: set[str] = set()
+        pages_checked = 0
 
         for page in range(1, self.source.max_pages + 1):
             url = self._build_page_url(page)
@@ -43,6 +45,8 @@ class AvitoProvider(ListingProvider):
             html = response.text
             self._ensure_not_suspicious(html=html, page=page, url=url)
             page_items = self.parse_listings_from_html(source_key=self.source.source_key, html=html)
+            page_items = [item for item in page_items if listing_matches_source_filters(item, self.source)]
+            pages_checked = page
 
             if page == 1 and len(page_items) < self.MIN_EXPECTED_ITEMS:
                 raise SuspiciousResponseError(
@@ -59,6 +63,11 @@ class AvitoProvider(ListingProvider):
         if not listings:
             raise SuspiciousResponseError("Avito returned no listings after parsing.")
 
+        self.last_fetch_stats = ProviderFetchStats(
+            scanned_count=len(listings),
+            matched_count=len(listings),
+            pages_checked=pages_checked,
+        )
         return listings
 
     @classmethod

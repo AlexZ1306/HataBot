@@ -45,7 +45,8 @@ def load_settings(config_path: str | Path = "config/config.yaml", env_path: str 
     telegram = TelegramConfig(
         enabled=bool(telegram_cfg.get("enabled", True)),
         bot_token=_read_env("HATABOT_TELEGRAM_BOT_TOKEN"),
-        chat_id=_read_env("HATABOT_TELEGRAM_CHAT_ID"),
+        chat_id=_resolve_primary_chat_id(),
+        chat_ids=_resolve_chat_ids(),
     )
 
     sources = [_parse_source(item) for item in raw_sources]
@@ -82,7 +83,7 @@ def _parse_source(raw_source: dict) -> SourceConfig:
         raise ConfigError("source_key cannot be empty.")
     if not display_name:
         raise ConfigError(f"display_name cannot be empty for source {source_key}.")
-    if provider not in {"avito", "cian"}:
+    if provider not in {"avito", "cian", "domclick"}:
         raise ConfigError(f"Unsupported provider '{provider}' for source {source_key}.")
     if not _looks_like_url(search_url):
         raise ConfigError(f"Invalid search_url for source {source_key}: {search_url}")
@@ -91,6 +92,10 @@ def _parse_source(raw_source: dict) -> SourceConfig:
     timeout = int(raw_source.get("request_timeout_sec", 20))
     repost_days = int(raw_source.get("repost_suppression_days", 30))
     user_agent = str(raw_source.get("user_agent", "")).strip()
+    min_price_rub = _optional_int(raw_source.get("min_price_rub"))
+    max_price_rub = _optional_int(raw_source.get("max_price_rub"))
+    min_area_m2 = _optional_float(raw_source.get("min_area_m2"))
+    min_rooms = _optional_int(raw_source.get("min_rooms"))
 
     if max_pages < 1:
         raise ConfigError(f"max_pages must be >= 1 for source {source_key}.")
@@ -128,6 +133,10 @@ def _parse_source(raw_source: dict) -> SourceConfig:
         repost_suppression_days=repost_days,
         user_agent=user_agent,
         poll_note=str(raw_source.get("poll_note")).strip() if raw_source.get("poll_note") else None,
+        min_price_rub=min_price_rub,
+        max_price_rub=max_price_rub,
+        min_area_m2=min_area_m2,
+        min_rooms=min_rooms,
         required_districts=[str(item).strip() for item in required_districts if str(item).strip()],
         exclude_text_patterns=[str(item).strip() for item in exclude_text_patterns if str(item).strip()],
         sort_override=sort_override,
@@ -142,6 +151,42 @@ def _read_env(name: str) -> str | None:
         return None
     stripped = value.strip()
     return stripped or None
+
+
+def _read_env_list(name: str) -> list[str]:
+    value = _read_env(name)
+    if not value:
+        return []
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _resolve_chat_ids() -> list[str]:
+    explicit = _read_env_list("HATABOT_TELEGRAM_CHAT_IDS")
+    if explicit:
+        return explicit
+    return _read_env_list("HATABOT_TELEGRAM_CHAT_ID")
+
+
+def _resolve_primary_chat_id() -> str | None:
+    explicit = _read_env_list("HATABOT_TELEGRAM_CHAT_IDS")
+    if explicit:
+        return explicit[0]
+    fallback = _read_env_list("HATABOT_TELEGRAM_CHAT_ID")
+    if fallback:
+        return fallback[0]
+    return None
+
+
+def _optional_int(value) -> int | None:
+    if value is None or value == "":
+        return None
+    return int(value)
+
+
+def _optional_float(value) -> float | None:
+    if value is None or value == "":
+        return None
+    return float(value)
 
 
 def _resolve_path(project_root: Path, value: str | Path) -> Path:

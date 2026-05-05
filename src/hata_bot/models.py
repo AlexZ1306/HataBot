@@ -35,6 +35,10 @@ class SourceConfig:
     repost_suppression_days: int
     user_agent: str
     poll_note: str | None = None
+    min_price_rub: int | None = None
+    max_price_rub: int | None = None
+    min_area_m2: float | None = None
+    min_rooms: int | None = None
     required_districts: list[str] = field(default_factory=list)
     exclude_text_patterns: list[str] = field(default_factory=list)
     sort_override: str | None = None
@@ -45,6 +49,7 @@ class TelegramConfig:
     enabled: bool
     bot_token: str | None
     chat_id: str | None
+    chat_ids: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -64,6 +69,13 @@ class Settings:
 
 
 @dataclass(slots=True)
+class ProviderFetchStats:
+    scanned_count: int
+    matched_count: int
+    pages_checked: int
+
+
+@dataclass(slots=True)
 class RunResult:
     source_key: str
     status: str
@@ -71,3 +83,6 @@ class RunResult:
     new_count: int
     bootstrap: bool
     error_message: str | None = None
+    scanned_count: int | None = None
+    matched_count: int | None = None
+    pages_checked: int | None = None

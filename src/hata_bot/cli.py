@@ -104,13 +104,19 @@ def _run(settings, logger: logging.Logger, *, source_key: str | None) -> int:
             state.close()
 
     for result in results:
+        suffix = ""
+        if result.scanned_count is not None and result.matched_count is not None:
+            suffix = f" scanned_count={result.scanned_count} matched_count={result.matched_count}"
+        if result.pages_checked is not None:
+            suffix += f" pages_checked={result.pages_checked}"
         logger.info(
-            "Source %s finished with status=%s items_fetched=%s new_count=%s bootstrap=%s",
+            "Source %s finished with status=%s items_fetched=%s new_count=%s bootstrap=%s%s",
             result.source_key,
             result.status,
             result.items_fetched,
             result.new_count,
             result.bootstrap,
+            suffix,
         )
     return 0
 

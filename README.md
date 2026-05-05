@@ -5,11 +5,12 @@ HataBot is a small local utility for monitoring apartment rental search results 
 Current MVP:
 - Avito search monitoring
 - Cian search monitoring
+- Domclick search monitoring
 - Telegram notifications
 - SQLite remembered state
 - silent first-run bootstrap
 - Windows Task Scheduler friendly scripts
-- provider/notifier architecture for future `cian`, `domclick`, `n1`
+- provider/notifier architecture for future `n1`
 
 ## What It Does
 
@@ -37,8 +38,10 @@ Copy-Item .env.example .env
 ```
 
 4. Fill in `HATABOT_TELEGRAM_BOT_TOKEN` and `HATABOT_TELEGRAM_CHAT_ID` in `.env`.
+   If the bot should work for several family members, add them to `HATABOT_TELEGRAM_CHAT_IDS` as a comma-separated list.
 
 5. Review `config/config.yaml`.
+   By default it already contains `Авито`, `ЦИАН`, and `Домклик`.
 
 6. Verify configuration and Telegram access:
 
@@ -74,6 +77,7 @@ Then open your bot in Telegram and send `/start`.
 - Install scheduled task every 10 minutes: `.\scripts\install_task.ps1`
 - Run a specific source: `.\.venv\Scripts\python -m hata_bot run --source avito_nsk_family`
 - Run a specific source: `.\.venv\Scripts\python -m hata_bot run --source cian_nsk_family`
+- Run a specific source: `.\.venv\Scripts\python -m hata_bot run --source domclick_nsk_family`
 - Run Telegram button listener now: `.\scripts\run_bot_listener.ps1`
 - Install Telegram button listener at logon: `.\scripts\install_bot_listener_task.ps1`
 
@@ -89,8 +93,12 @@ Then open your bot in Telegram and send `/start`.
 
 - The current Avito implementation reads the search listing page only and does not open each listing separately.
 - The current Cian implementation uses a real local Chrome/Edge window via DevTools Protocol because direct HTTP access is blocked by Cian WAF. The window starts minimized and off-screen.
+- The current Domclick implementation also uses a real local Chrome/Edge window via DevTools Protocol because direct HTTP access is blocked by Domclick protection.
 - Cian can be filtered further in code using `required_districts` and `exclude_text_patterns` from `config/config.yaml`.
+- Domclick can be filtered further in code using `required_districts` from `config/config.yaml`.
+- Domclick currently monitors the provided search URL as-is. A stable public URL parameter for strict "newest first" sorting was not confirmed, so HataBot checks several pages and then sorts matched cards by listing timestamps on its side.
 - If Avito returns a suspicious response such as CAPTCHA, too few cards, or broken HTML, HataBot refuses to overwrite state.
 - If Cian returns WAF/VPN blocks or too few usable cards, HataBot refuses to overwrite state.
+- If Domclick returns too few usable cards or malformed state, HataBot refuses to overwrite state.
 - Notifications are sent one by one in Telegram.
 - The interactive Telegram bot starts with a source picker and then gives source-specific buttons: `Проверить сейчас`, `Последнее объявление`, `Последние 3 объявления`, and `Меню`.

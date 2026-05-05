@@ -8,10 +8,10 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from bs4 import BeautifulSoup
 
 from hata_bot.browser.chrome_cdp import ChromeCdpFetcher
-from hata_bot.exceptions import ProviderError, SuspiciousResponseError
+from hata_bot.exceptions import SuspiciousResponseError
 from hata_bot.fingerprints import build_content_fingerprint, normalize_text, parse_rooms_and_area
-from hata_bot.models import Listing, SourceConfig
-from hata_bot.providers.base import ListingProvider
+from hata_bot.models import Listing, ProviderFetchStats, SourceConfig
+from hata_bot.providers.base import ListingProvider, listing_matches_source_filters
 
 
 class CianProvider(ListingProvider):
@@ -21,19 +21,51 @@ class CianProvider(ListingProvider):
         self.source = source
         self.data_dir = data_dir
         self.profile_dir = self.data_dir / "browser_profiles" / source.source_key
+        self.last_fetch_stats = ProviderFetchStats(scanned_count=0, matched_count=0, pages_checked=0)
 
     def fetch(self) -> list[Listing]:
         fetcher = ChromeCdpFetcher(profile_dir=self.profile_dir)
-        html = fetcher.fetch_html(
-            url=self._build_search_url(),
-            ready_expression="document.querySelectorAll('[data-name=\"CardComponent\"]').length > 0",
-            timeout_sec=max(25, self.source.request_timeout_sec),
-        )
-        listings = self.parse_listings_from_html(source=self.source, html=html)
+        listings: list[Listing] = []
+        seen_ids: set[str] = set()
+        scanned_count = 0
+        pages_checked = 0
+
+        for page in range(1, self.source.max_pages + 1):
+            html = fetcher.fetch_html(
+                url=self._build_search_url(page=page),
+                ready_expression="document.querySelectorAll('[data-name=\"CardComponent\"]').length > 0",
+                timeout_sec=max(25, self.source.request_timeout_sec),
+            )
+            page_scanned = self._count_cards(html)
+            pages_checked = page
+
+            if page == 1 and page_scanned < self.MIN_EXPECTED_ITEMS:
+                raise SuspiciousResponseError(
+                    f"Cian returned too few cards on page 1: {page_scanned} < {self.MIN_EXPECTED_ITEMS}"
+                )
+            if page > 1 and page_scanned == 0:
+                break
+
+            scanned_count += page_scanned
+            page_items = self.parse_listings_from_html(source=self.source, html=html)
+            for item in page_items:
+                if item.external_id in seen_ids:
+                    continue
+                seen_ids.add(item.external_id)
+                listings.append(item)
+
+        if not listings:
+            raise SuspiciousResponseError("Cian returned no usable listings after parsing.")
         if len(listings) < self.MIN_EXPECTED_ITEMS:
             raise SuspiciousResponseError(
                 f"Cian returned too few usable items: {len(listings)} < {self.MIN_EXPECTED_ITEMS}"
             )
+
+        self.last_fetch_stats = ProviderFetchStats(
+            scanned_count=scanned_count,
+            matched_count=len(listings),
+            pages_checked=pages_checked,
+        )
         return listings
 
     @classmethod
@@ -121,16 +153,25 @@ class CianProvider(ListingProvider):
                 )
             )
 
-        return listings
+        return [item for item in listings if listing_matches_source_filters(item, source)]
 
-    def _build_search_url(self) -> str:
+    def _build_search_url(self, *, page: int = 1) -> str:
         parsed = urlparse(self.source.search_url)
         query = dict(parse_qsl(parsed.query, keep_blank_values=True))
         if self.source.sort_override:
             query["sort"] = self.source.sort_override
         elif "sort" not in query:
             query["sort"] = "creation_date_desc"
+        if page > 1:
+            query["p"] = str(page)
+        else:
+            query.pop("p", None)
         return urlunparse(parsed._replace(query=urlencode(query)))
+
+    @staticmethod
+    def _count_cards(html: str) -> int:
+        soup = BeautifulSoup(html, "html.parser")
+        return len(soup.select('[data-name="CardComponent"]'))
 
     @staticmethod
     def _extract_offer_id(url: str) -> str | None:

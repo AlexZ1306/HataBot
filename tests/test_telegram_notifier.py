@@ -131,3 +131,36 @@ def test_send_new_listing_uploads_photo_bytes_when_download_succeeds() -> None:
     assert session.post_calls[0][0].endswith("/sendPhoto")
     assert "files" in session.post_calls[0][1]
     assert session.post_calls[0][1]["files"]["photo"][1] == b"jpegdata"
+
+
+def test_send_message_broadcasts_to_multiple_chat_ids() -> None:
+    class FakeResponse:
+        def __init__(self, status_code, payload):
+            self.status_code = status_code
+            self._payload = payload
+            self.headers = {}
+            self.content = b""
+
+        def json(self):
+            return self._payload
+
+    class FakeSession:
+        def __init__(self):
+            self.post_calls = []
+
+        def post(self, url, timeout, **kwargs):
+            self.post_calls.append((url, kwargs))
+            return FakeResponse(200, {"ok": True, "result": {}})
+
+    session = FakeSession()
+    notifier = TelegramNotifier(
+        TelegramConfig(enabled=True, bot_token="token", chat_id="chat-1", chat_ids=["chat-1", "chat-2"]),
+        session=session,
+    )
+
+    notifier.send_message("hello")
+
+    assert len(session.post_calls) == 2
+    payloads = [call[1]["json"] for call in session.post_calls]
+    assert payloads[0]["chat_id"] == "chat-1"
+    assert payloads[1]["chat_id"] == "chat-2"

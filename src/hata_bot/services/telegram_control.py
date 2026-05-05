@@ -10,7 +10,8 @@ from hata_bot.services.monitor import MonitorService
 from hata_bot.state import StateStore
 
 
-BUTTON_CHECK_NOW = "Проверить сейчас"
+BUTTON_CHECK_ALL = "Проверить новые объявления"
+BUTTON_CHECK_NOW = "Проверить выбранный сервис"
 BUTTON_LAST = "Последнее объявление"
 BUTTON_LAST_THREE = "Последние 3 объявления"
 BUTTON_MENU = "Меню"
@@ -34,7 +35,7 @@ class TelegramControlBot:
         self.state = state
         self.logger = logger or logging.getLogger("hata_bot.telegram_control")
         self.provider_factory = provider_factory
-        self.allowed_chat_id = str(settings.telegram.chat_id)
+        self.allowed_chat_ids = self._resolve_allowed_chat_ids()
         self.listener_lock_file = settings.app.lock_file.with_name("hatabot-telegram-listener.lock")
 
     def poll_forever(self, *, poll_timeout: int = 25, once: bool = False) -> None:
@@ -69,8 +70,9 @@ class TelegramControlBot:
 
         chat = message.get("chat", {})
         chat_id = str(chat.get("id", ""))
-        if chat_id != self.allowed_chat_id:
-            self.logger.warning("Ignoring Telegram update from unauthorized chat_id=%s", chat_id)
+        if chat_id not in self.allowed_chat_ids:
+            self.logger.warning("Received Telegram update from unauthorized chat_id=%s", chat_id)
+            self._handle_unauthorized_chat(chat_id=chat_id)
             return
 
         self.handle_message(chat_id=chat_id, text=text)
@@ -89,7 +91,11 @@ class TelegramControlBot:
             return
 
         selected_source = self._get_selected_source()
-        if normalized in {BUTTON_CHECK_NOW.casefold(), "/check"}:
+        if normalized in {BUTTON_CHECK_ALL.casefold(), "/check_all"}:
+            self._clear_selected_source()
+            self._handle_check_all(chat_id)
+            return
+        if normalized in self._check_button_aliases(selected_source):
             self._handle_check_now(chat_id, selected_source)
             return
         if normalized in {BUTTON_LAST.casefold(), "/latest"}:
@@ -101,29 +107,37 @@ class TelegramControlBot:
 
         reply_markup = self._source_menu(selected_source) if selected_source else self._main_menu()
         self.notifier.send_message(
-            "Выбери источник и пользуйся кнопками ниже. Если захочешь сменить источник, нажми Меню.",
+            "Нажми одну из кнопок ниже.",
             chat_id=chat_id,
             reply_markup=reply_markup,
         )
 
     def _send_main_menu(self, chat_id: str) -> None:
-        sources = self._enabled_sources()
-        names = ", ".join(source.display_name for source in sources)
         text = (
-            "<b>HataBot готов</b>\n"
-            f"Выбери источник: <b>{names}</b>.\n"
-            "После выбора появятся кнопки для мгновенной проверки и просмотра свежих объявлений."
+            "<b>HataBot</b>\n"
+            "Можно сразу проверить все сервисы или открыть один сервис отдельно."
         )
         self.notifier.send_message(text, chat_id=chat_id, reply_markup=self._main_menu())
 
     def _send_source_menu(self, chat_id: str, source: SourceConfig) -> None:
         text = (
-            f"<b>Источник: {source.display_name}</b>\n"
-            "Кнопка <b>Проверить сейчас</b> запускает ручную проверку только для этого источника.\n"
-            "Кнопки <b>Последнее объявление</b> и <b>Последние 3 объявления</b> показывают самые свежие карточки из текущей выдачи.\n"
-            "Кнопка <b>Меню</b> возвращает к выбору источника."
+            f"<b>{source.display_name}</b>\n"
+            "Можно проверить новые объявления или посмотреть самые свежие варианты."
         )
         self.notifier.send_message(text, chat_id=chat_id, reply_markup=self._source_menu(source))
+
+    def _handle_check_all(self, chat_id: str) -> None:
+        try:
+            results = self.run_monitor_now()
+        except SingleInstanceError:
+            self.notifier.send_message("Проверка уже идёт прямо сейчас. Попробуй ещё раз через минуту.", chat_id=chat_id)
+            return
+        except Exception as exc:
+            self.notifier.send_message(f"Не получилось проверить объявления: {exc}", chat_id=chat_id)
+            return
+
+        text = self._build_all_sources_summary(results)
+        self.notifier.send_message(text, chat_id=chat_id, reply_markup=self._main_menu())
 
     def _handle_check_now(self, chat_id: str, selected_source: SourceConfig | None) -> None:
         source = self._require_selected_source(chat_id, selected_source)
@@ -140,26 +154,7 @@ class TelegramControlBot:
             return
 
         result = results[0]
-
-        if result.bootstrap:
-            text = (
-                f"Первая инициализация для {source.display_name} завершена.\n"
-                f"Я запомнил текущую выдачу: {result.items_fetched} объявлений.\n"
-                "Следующие проверки будут присылать только новые варианты."
-            )
-        elif result.new_count == 0:
-            text = (
-                f"Проверка {source.display_name} завершена.\n"
-                "Новых объявлений нет.\n"
-                f"Сейчас в просмотренной выдаче: {result.items_fetched} карточек."
-            )
-        else:
-            text = (
-                f"Проверка {source.display_name} завершена.\n"
-                f"Найдено новых объявлений: {result.new_count}.\n"
-                "Я уже отправил их отдельными сообщениями."
-            )
-
+        text = self._build_single_source_summary(source, result)
         self.notifier.send_message(text, chat_id=chat_id, reply_markup=self._source_menu(source))
 
     def _handle_latest(self, chat_id: str, *, selected_source: SourceConfig | None, limit: int) -> None:
@@ -180,19 +175,19 @@ class TelegramControlBot:
         if limit == 1:
             self.notifier.send_listing(
                 listings[0],
-                poll_note=source.poll_note or "Самое свежее объявление",
+                poll_note=f"{source.display_name}: последнее объявление",
                 chat_id=chat_id,
             )
         else:
             self.notifier.send_message(
-                f"Показываю последние {limit} объявления из {source.display_name} по одному сообщению.",
+                f"Показываю {limit} самых свежих объявления из {source.display_name}.",
                 chat_id=chat_id,
                 reply_markup=self._source_menu(source),
             )
             for index, listing in enumerate(listings, start=1):
                 self.notifier.send_listing(
                     listing,
-                    poll_note=f"{source.poll_note or 'Последние объявления'} [{index}/{limit}]",
+                    poll_note=f"{source.display_name}: объявление {index} из {limit}",
                     chat_id=chat_id,
                 )
 
@@ -223,11 +218,14 @@ class TelegramControlBot:
 
         from hata_bot.providers.avito import AvitoProvider
         from hata_bot.providers.cian import CianProvider
+        from hata_bot.providers.domclick import DomclickProvider
 
         if source.provider == "avito":
             return AvitoProvider(source)
         if source.provider == "cian":
             return CianProvider(source, data_dir=self.settings.app.data_dir)
+        if source.provider == "domclick":
+            return DomclickProvider(source, data_dir=self.settings.app.data_dir)
         raise ConfigError(f"Unsupported provider: {source.provider}")
 
     def _load_offset(self) -> int | None:
@@ -240,7 +238,9 @@ class TelegramControlBot:
             return None
 
     def _main_menu(self) -> dict:
-        rows = [[{"text": source.display_name}] for source in self._enabled_sources()]
+        rows = [[{"text": BUTTON_CHECK_ALL}]]
+        for source in self._enabled_sources():
+            rows.append([{"text": source.display_name}])
         return {
             "keyboard": rows,
             "resize_keyboard": True,
@@ -250,7 +250,7 @@ class TelegramControlBot:
     def _source_menu(self, source: SourceConfig) -> dict:
         return {
             "keyboard": [
-                [{"text": BUTTON_CHECK_NOW}],
+                [{"text": self._check_source_button(source)}],
                 [{"text": BUTTON_LAST}, {"text": BUTTON_LAST_THREE}],
                 [{"text": BUTTON_MENU}],
             ],
@@ -300,3 +300,86 @@ class TelegramControlBot:
             reply_markup=self._main_menu(),
         )
         return None
+
+    @staticmethod
+    def _check_source_button(source: SourceConfig) -> str:
+        return f"Проверить {source.display_name}"
+
+    def _check_button_aliases(self, selected_source: SourceConfig | None) -> set[str]:
+        aliases = {BUTTON_CHECK_NOW.casefold(), "/check"}
+        if selected_source is not None:
+            aliases.add(self._check_source_button(selected_source).casefold())
+        return aliases
+
+    def _build_single_source_summary(self, source: SourceConfig, result: RunResult) -> str:
+        lines = [f"<b>{source.display_name}</b>"]
+        if result.bootstrap:
+            lines.append("Я запомнил текущие объявления.")
+        elif result.new_count > 0:
+            lines.append(f"Нашёл новых объявлений: {result.new_count}.")
+        else:
+            lines.append("Новых объявлений нет.")
+
+        lines.append(self._format_inventory_line(result))
+        if result.new_count > 0:
+            lines.append("Новые объявления уже отправил отдельными сообщениями.")
+        elif result.bootstrap:
+            lines.append("Дальше буду присылать только новые объявления.")
+        return "\n".join(lines)
+
+    def _build_all_sources_summary(self, results: list[RunResult]) -> str:
+        lines = ["<b>Проверка завершена</b>"]
+        total_new = 0
+        had_bootstrap = False
+
+        for result in results:
+            source = self._get_source_by_key(result.source_key)
+            lines.append(self._format_result_line(source, result))
+            total_new += result.new_count
+            had_bootstrap = had_bootstrap or result.bootstrap
+
+        if total_new > 0:
+            lines.append("Новые объявления уже отправил отдельными сообщениями.")
+        elif had_bootstrap:
+            lines.append("Теперь буду присылать только новые объявления.")
+
+        return "\n".join(lines)
+
+    def _format_result_line(self, source: SourceConfig, result: RunResult) -> str:
+        if result.bootstrap:
+            prefix = f"{source.display_name}: запомнил текущие объявления."
+        elif result.new_count > 0:
+            prefix = f"{source.display_name}: новых объявлений {result.new_count}."
+        else:
+            prefix = f"{source.display_name}: новых объявлений нет."
+        return f"{prefix} {self._format_inventory_line(result)}"
+
+    @staticmethod
+    def _format_inventory_line(result: RunResult) -> str:
+        matched = result.matched_count if result.matched_count is not None else result.items_fetched
+        scanned = result.scanned_count if result.scanned_count is not None else matched
+        if scanned > matched:
+            return f"Просмотрел {scanned}, подошло {matched}."
+        return f"Подходящих сейчас: {matched}."
+
+    def _get_source_by_key(self, source_key: str) -> SourceConfig:
+        for source in self._enabled_sources():
+            if source.source_key == source_key:
+                return source
+        raise ConfigError(f"Unknown source_key: {source_key}")
+
+    def _resolve_allowed_chat_ids(self) -> set[str]:
+        ids = self.settings.telegram.chat_ids or ([self.settings.telegram.chat_id] if self.settings.telegram.chat_id else [])
+        return {str(item) for item in ids if str(item).strip()}
+
+    def _handle_unauthorized_chat(self, *, chat_id: str) -> None:
+        text = (
+            "<b>HataBot</b>\n"
+            "Этот чат пока не подключён.\n"
+            f"Попроси добавить ID: <code>{chat_id}</code>\n"
+            "После добавления нажми /start ещё раз."
+        )
+        try:
+            self.notifier.send_message(text, chat_id=chat_id)
+        except Exception:
+            self.logger.exception("Failed to send unauthorized-chat hint to chat_id=%s", chat_id)

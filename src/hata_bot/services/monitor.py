@@ -8,6 +8,7 @@ from hata_bot.models import Listing, RunResult, Settings, SourceConfig
 from hata_bot.notifiers.base import Notifier
 from hata_bot.providers.avito import AvitoProvider
 from hata_bot.providers.cian import CianProvider
+from hata_bot.providers.domclick import DomclickProvider
 from hata_bot.state import StateStore
 
 
@@ -41,18 +42,40 @@ class MonitorService:
         bootstrap = False
         items_fetched = 0
         new_count = 0
+        scanned_count = 0
+        matched_count = 0
+        pages_checked = 0
 
         try:
             provider = self.provider_factory(source)
             listings = provider.fetch()
             items_fetched = len(listings)
+            fetch_stats = getattr(provider, "last_fetch_stats", None)
+            if fetch_stats is not None:
+                scanned_count = fetch_stats.scanned_count
+                matched_count = fetch_stats.matched_count
+                pages_checked = fetch_stats.pages_checked
+            else:
+                scanned_count = items_fetched
+                matched_count = items_fetched
+                pages_checked = source.max_pages
 
             bootstrap = self.state.count_seen(source.source_key) == 0
             if bootstrap:
                 for listing in listings:
                     self.state.insert_listing(listing, notification_state="baseline", seen_at=started_iso)
                 self.logger.info("Seeded baseline for %s with %s listings", source.source_key, len(listings))
-                result = RunResult(source.source_key, "bootstrap", items_fetched, 0, True, None)
+                result = RunResult(
+                    source.source_key,
+                    "bootstrap",
+                    items_fetched,
+                    0,
+                    True,
+                    None,
+                    scanned_count=scanned_count,
+                    matched_count=matched_count,
+                    pages_checked=pages_checked,
+                )
             else:
                 self._ingest_listings(source, listings, seen_at=started_iso)
                 pending = self.state.get_pending_notifications(source.source_key)
@@ -60,7 +83,17 @@ class MonitorService:
                     self.notifier.send_new_listing(listing, poll_note=source.poll_note)
                     self.state.mark_notified(source.source_key, listing.external_id, notified_at=started_iso)
                     new_count += 1
-                result = RunResult(source.source_key, "ok", items_fetched, new_count, False, None)
+                result = RunResult(
+                    source.source_key,
+                    "ok",
+                    items_fetched,
+                    new_count,
+                    False,
+                    None,
+                    scanned_count=scanned_count,
+                    matched_count=matched_count,
+                    pages_checked=pages_checked,
+                )
 
             finished = datetime.now(timezone.utc)
             self.state.finish_run(
@@ -118,4 +151,6 @@ class MonitorService:
             return AvitoProvider(source)
         if source.provider == "cian":
             return CianProvider(source, data_dir=self.settings.app.data_dir)
+        if source.provider == "domclick":
+            return DomclickProvider(source, data_dir=self.settings.app.data_dir)
         raise ConfigError(f"Unsupported provider: {source.provider}")

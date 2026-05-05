@@ -3,6 +3,7 @@ from pathlib import Path
 
 from hata_bot.models import AppConfig, Listing, RunResult, Settings, SourceConfig, TelegramConfig
 from hata_bot.services.telegram_control import (
+    BUTTON_CHECK_ALL,
     BUTTON_MENU,
     BUTTON_CHECK_NOW,
     BUTTON_LAST,
@@ -116,10 +117,11 @@ def test_start_message_sends_menu(tmp_path: Path) -> None:
     bot, notifier, state = build_bot(tmp_path)
     bot.handle_message(chat_id="1281297580", text="/start")
 
-    assert "HataBot готов" in notifier.sent_messages[-1]["text"]
+    assert "<b>HataBot</b>" in notifier.sent_messages[-1]["text"]
     buttons = notifier.sent_messages[-1]["reply_markup"]["keyboard"]
-    assert buttons[0][0]["text"] == "Авито"
-    assert buttons[1][0]["text"] == "ЦИАН"
+    assert buttons[0][0]["text"] == BUTTON_CHECK_ALL
+    assert buttons[1][0]["text"] == "Авито"
+    assert buttons[2][0]["text"] == "ЦИАН"
     state.close()
 
 
@@ -138,22 +140,24 @@ def test_selecting_source_switches_to_source_menu(tmp_path: Path) -> None:
 
     bot.handle_message(chat_id="1281297580", text="ЦИАН")
 
-    assert "Источник: ЦИАН" in notifier.sent_messages[-1]["text"]
+    assert "<b>ЦИАН</b>" in notifier.sent_messages[-1]["text"]
     rows = notifier.sent_messages[-1]["reply_markup"]["keyboard"]
+    assert rows[0][0]["text"] == "Проверить ЦИАН"
     assert rows[-1][0]["text"] == BUTTON_MENU
     assert state.get_meta("telegram_selected_source") == "cian_nsk_family"
     state.close()
 
 
 def test_check_now_reports_no_new_items_for_selected_source(tmp_path: Path) -> None:
-    results = [RunResult("cian_nsk_family", "ok", 21, 0, False, None)]
+    results = [RunResult("cian_nsk_family", "ok", 17, 0, False, None, scanned_count=21, matched_count=17)]
     bot, notifier, state = build_bot(tmp_path, run_results=results)
     bot.handle_message(chat_id="1281297580", text="ЦИАН")
 
-    bot.handle_message(chat_id="1281297580", text=BUTTON_CHECK_NOW)
+    bot.handle_message(chat_id="1281297580", text="Проверить ЦИАН")
 
-    assert "Проверка ЦИАН завершена" in notifier.sent_messages[-1]["text"]
-    assert "21 карточек" in notifier.sent_messages[-1]["text"]
+    assert "<b>ЦИАН</b>" in notifier.sent_messages[-1]["text"]
+    assert "Новых объявлений нет" in notifier.sent_messages[-1]["text"]
+    assert "Просмотрел 21, подошло 17" in notifier.sent_messages[-1]["text"]
     state.close()
 
 
@@ -164,11 +168,12 @@ def test_latest_buttons_return_listing_text_for_selected_source(tmp_path: Path) 
 
     bot.handle_message(chat_id="1281297580", text=BUTTON_LAST)
     assert notifier.sent_listings[-1]["listing"].external_id == "1"
-    assert "Авито test" in notifier.sent_listings[-1]["poll_note"]
+    assert "Авито: последнее объявление" in notifier.sent_listings[-1]["poll_note"]
 
     bot.handle_message(chat_id="1281297580", text=BUTTON_LAST_THREE)
-    assert "Показываю последние 3 объявления из Авито" in notifier.sent_messages[-1]["text"]
+    assert "Показываю 3 самых свежих объявления из Авито" in notifier.sent_messages[-1]["text"]
     assert [item["listing"].external_id for item in notifier.sent_listings[-3:]] == ["1", "2", "3"]
+    assert notifier.sent_listings[-1]["poll_note"] == "Авито: объявление 3 из 3"
     state.close()
 
 
@@ -178,6 +183,42 @@ def test_menu_button_returns_to_source_picker(tmp_path: Path) -> None:
 
     bot.handle_message(chat_id="1281297580", text=BUTTON_MENU)
 
-    assert "Выбери источник" in notifier.sent_messages[-1]["text"]
+    assert "Можно сразу проверить все сервисы" in notifier.sent_messages[-1]["text"]
     assert state.get_meta("telegram_selected_source") == ""
+    state.close()
+
+
+def test_check_all_builds_compact_summary(tmp_path: Path) -> None:
+    results = [
+        RunResult("avito_nsk_family", "ok", 50, 0, False, None, scanned_count=50, matched_count=50),
+        RunResult("cian_nsk_family", "ok", 17, 2, False, None, scanned_count=31, matched_count=17),
+    ]
+    bot, notifier, state = build_bot(tmp_path, run_results=results)
+
+    bot.handle_message(chat_id="1281297580", text=BUTTON_CHECK_ALL)
+
+    text = notifier.sent_messages[-1]["text"]
+    assert "Проверка завершена" in text
+    assert "Авито: новых объявлений нет. Подходящих сейчас: 50." in text
+    assert "ЦИАН: новых объявлений 2. Просмотрел 31, подошло 17." in text
+    assert "Новые объявления уже отправил отдельными сообщениями." in text
+    state.close()
+
+
+def test_unauthorized_chat_gets_help_message_with_chat_id(tmp_path: Path) -> None:
+    bot, notifier, state = build_bot(tmp_path)
+
+    bot.handle_update(
+        {
+            "update_id": 1,
+            "message": {
+                "chat": {"id": 777777},
+                "text": "/start",
+            },
+        }
+    )
+
+    text = notifier.sent_messages[-1]["text"]
+    assert "Этот чат пока не подключён" in text
+    assert "777777" in text
     state.close()
