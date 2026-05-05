@@ -75,6 +75,14 @@ def _doctor(settings, logger: logging.Logger) -> int:
         if source.enabled:
             logger.info("Enabled source: %s (%s)", source.source_key, source.provider)
 
+    if settings.school_commute and settings.school_commute.enabled:
+        if settings.school_commute.api_key:
+            logger.info("School commute enrichment is enabled for %s.", settings.school_commute.destination_name)
+        else:
+            logger.warning(
+                "School commute enrichment is configured, but HATABOT_2GIS_API_KEY is missing. Cards will be shown without route times."
+            )
+
     notifier = TelegramNotifier(settings.telegram)
     bot_username = notifier.healthcheck()
     logger.info("Telegram connectivity OK. Bot username: %s", bot_username)

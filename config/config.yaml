@@ -8,6 +8,17 @@ notifications:
   telegram:
     enabled: true
 
+school_commute:
+  enabled: true
+  origin_city_name: "Новосибирск"
+  destination_name: "Школа ребенка"
+  destination_address: "Спартака, 12, Центральный район, Новосибирск, 630007"
+  destination_lat: 55.020413
+  destination_lon: 82.922467
+  departure_time_local: "07:30"
+  cache_ttl_hours: 168
+  request_timeout_sec: 12
+
 sources:
   - source_key: avito_nsk_family
     display_name: "Авито"

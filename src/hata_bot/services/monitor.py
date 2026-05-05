@@ -9,6 +9,7 @@ from hata_bot.notifiers.base import Notifier
 from hata_bot.providers.avito import AvitoProvider
 from hata_bot.providers.cian import CianProvider
 from hata_bot.providers.domclick import DomclickProvider
+from hata_bot.school_commute import SchoolCommuteService
 from hata_bot.search_profile import apply_search_profile_to_source, build_source_profile_signature, load_search_profile
 from hata_bot.state import StateStore
 
@@ -28,6 +29,7 @@ class MonitorService:
         self.notifier = notifier
         self.logger = logger or logging.getLogger("hata_bot.monitor")
         self.provider_factory = provider_factory or self._build_provider
+        self.school_commute = SchoolCommuteService(settings.school_commute, state, logger=self.logger)
 
     def run(self, *, source_key: str | None = None) -> list[RunResult]:
         profile = load_search_profile(self.settings, self.state)
@@ -94,7 +96,8 @@ class MonitorService:
                 self._ingest_listings(source, listings, seen_at=started_iso)
                 pending = self.state.get_pending_notifications(source.source_key)
                 for listing in pending:
-                    self.notifier.send_new_listing(listing, poll_note=source.poll_note)
+                    enriched_listing = self.school_commute.enrich_listing(listing)
+                    self.notifier.send_new_listing(enriched_listing, poll_note=source.poll_note)
                     self.state.mark_notified(source.source_key, listing.external_id, notified_at=started_iso)
                     new_count += 1
                 self.state.set_meta(source_signature_key, source_signature)

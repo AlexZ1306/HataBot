@@ -10,6 +10,7 @@ from hata_bot.exceptions import ConfigError, SingleInstanceError
 from hata_bot.locking import SingleInstanceLock
 from hata_bot.models import Listing, RunResult, SearchProfile, Settings, SourceConfig
 from hata_bot.notifiers.telegram import TelegramNotifier
+from hata_bot.school_commute import SchoolCommuteService
 from hata_bot.search_profile import (
     ROOM_OPTIONS,
     SUPPORTED_DISTRICTS,
@@ -86,6 +87,7 @@ class TelegramControlBot:
         self.listener_lock_file = settings.app.lock_file.with_name("hatabot-telegram-listener.lock")
         self._random_pool_refresh_lock = threading.Lock()
         self._random_pool_refresh_started = False
+        self.school_commute = SchoolCommuteService(settings.school_commute, state, logger=self.logger)
 
     def poll_forever(self, *, poll_timeout: int = 25, once: bool = False) -> None:
         offset = self._load_offset()
@@ -309,7 +311,7 @@ class TelegramControlBot:
 
         source = self._get_source_by_key(listing.source_key)
         self.notifier.send_listing(
-            listing,
+            self.school_commute.enrich_listing(listing),
             poll_note=f"Случайный вариант из общего пула · {source.display_name}",
             chat_id=chat_id,
         )
@@ -349,7 +351,7 @@ class TelegramControlBot:
 
         if limit == 1:
             self.notifier.send_listing(
-                listings[0],
+                self.school_commute.enrich_listing(listings[0]),
                 poll_note=f"{source.display_name}: последнее объявление",
                 chat_id=chat_id,
             )
@@ -361,7 +363,7 @@ class TelegramControlBot:
             )
             for index, listing in enumerate(listings, start=1):
                 self.notifier.send_listing(
-                    listing,
+                    self.school_commute.enrich_listing(listing),
                     poll_note=f"{source.display_name}: объявление {index} из {limit}",
                     chat_id=chat_id,
                 )

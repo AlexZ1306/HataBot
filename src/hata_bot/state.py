@@ -5,7 +5,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-from hata_bot.models import Listing
+from hata_bot.models import CommuteLeg, Listing, SchoolCommute
 
 
 def utc_now_iso() -> str:
@@ -87,6 +87,21 @@ class StateStore:
                 payload_json TEXT NOT NULL,
                 refreshed_at TEXT NOT NULL,
                 PRIMARY KEY (picker_key, listing_key)
+            );
+
+            CREATE TABLE IF NOT EXISTS geocode_cache (
+                query_key TEXT PRIMARY KEY,
+                query_text TEXT NOT NULL,
+                lat REAL NOT NULL,
+                lon REAL NOT NULL,
+                formatted_address TEXT,
+                resolved_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS school_commute_cache (
+                cache_key TEXT PRIMARY KEY,
+                payload_json TEXT NOT NULL,
+                computed_at TEXT NOT NULL
             );
             """
         )
@@ -386,6 +401,99 @@ class StateStore:
         ).fetchall()
         return [self._row_to_listing(row) for row in rows]
 
+    def get_geocode_cache(self, query_key: str, *, min_resolved_at: str | None = None) -> dict | None:
+        if min_resolved_at:
+            row = self.connection.execute(
+                """
+                SELECT query_text, lat, lon, formatted_address, resolved_at
+                FROM geocode_cache
+                WHERE query_key = ?
+                  AND resolved_at >= ?
+                """,
+                (query_key, min_resolved_at),
+            ).fetchone()
+        else:
+            row = self.connection.execute(
+                """
+                SELECT query_text, lat, lon, formatted_address, resolved_at
+                FROM geocode_cache
+                WHERE query_key = ?
+                """,
+                (query_key,),
+            ).fetchone()
+
+        if row is None:
+            return None
+        return {
+            "query_text": str(row["query_text"]),
+            "lat": float(row["lat"]),
+            "lon": float(row["lon"]),
+            "formatted_address": str(row["formatted_address"]) if row["formatted_address"] is not None else None,
+            "resolved_at": str(row["resolved_at"]),
+        }
+
+    def upsert_geocode_cache(
+        self,
+        *,
+        query_key: str,
+        query_text: str,
+        lat: float,
+        lon: float,
+        formatted_address: str | None,
+        resolved_at: str,
+    ) -> None:
+        self.connection.execute(
+            """
+            INSERT INTO geocode_cache (query_key, query_text, lat, lon, formatted_address, resolved_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(query_key) DO UPDATE SET
+                query_text = excluded.query_text,
+                lat = excluded.lat,
+                lon = excluded.lon,
+                formatted_address = excluded.formatted_address,
+                resolved_at = excluded.resolved_at
+            """,
+            (query_key, query_text, lat, lon, formatted_address, resolved_at),
+        )
+        self.connection.commit()
+
+    def get_school_commute_cache(self, cache_key: str, *, min_computed_at: str | None = None) -> SchoolCommute | None:
+        if min_computed_at:
+            row = self.connection.execute(
+                """
+                SELECT payload_json
+                FROM school_commute_cache
+                WHERE cache_key = ?
+                  AND computed_at >= ?
+                """,
+                (cache_key, min_computed_at),
+            ).fetchone()
+        else:
+            row = self.connection.execute(
+                """
+                SELECT payload_json
+                FROM school_commute_cache
+                WHERE cache_key = ?
+                """,
+                (cache_key,),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._school_commute_from_payload_json(str(row["payload_json"]))
+
+    def upsert_school_commute_cache(self, *, cache_key: str, school_commute: SchoolCommute, computed_at: str) -> None:
+        self.connection.execute(
+            """
+            INSERT INTO school_commute_cache (cache_key, payload_json, computed_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(cache_key) DO UPDATE SET
+                payload_json = excluded.payload_json,
+                computed_at = excluded.computed_at
+            """,
+            (cache_key, json.dumps(self._serialize_school_commute(school_commute), ensure_ascii=False), computed_at),
+        )
+        self.connection.commit()
+
     def _row_to_listing(self, row: sqlite3.Row) -> Listing:
         raw_payload = json.loads(row["raw_payload"]) if row["raw_payload"] else {}
         return Listing(
@@ -457,4 +565,45 @@ class StateStore:
             image_url=payload.get("image_url"),
             photo_urls=payload.get("photo_urls", []),
             raw_payload=payload.get("raw_payload", {}),
+        )
+
+    @staticmethod
+    def _serialize_school_commute(school_commute: SchoolCommute) -> dict:
+        def leg_to_payload(leg: CommuteLeg | None) -> dict | None:
+            if leg is None:
+                return None
+            return {
+                "duration_sec": leg.duration_sec,
+                "distance_m": leg.distance_m,
+            }
+
+        return {
+            "destination_name": school_commute.destination_name,
+            "reference_text": school_commute.reference_text,
+            "walking": leg_to_payload(school_commute.walking),
+            "driving": leg_to_payload(school_commute.driving),
+            "transit": leg_to_payload(school_commute.transit),
+        }
+
+    @staticmethod
+    def _school_commute_from_payload_json(payload_json: str) -> SchoolCommute:
+        payload = json.loads(payload_json)
+
+        def leg_from_payload(data: dict | None) -> CommuteLeg | None:
+            if not isinstance(data, dict):
+                return None
+            duration_sec = data.get("duration_sec")
+            if duration_sec is None:
+                return None
+            return CommuteLeg(
+                duration_sec=int(duration_sec),
+                distance_m=int(data["distance_m"]) if data.get("distance_m") is not None else None,
+            )
+
+        return SchoolCommute(
+            destination_name=str(payload.get("destination_name") or "Школа"),
+            reference_text=str(payload["reference_text"]) if payload.get("reference_text") else None,
+            walking=leg_from_payload(payload.get("walking")),
+            driving=leg_from_payload(payload.get("driving")),
+            transit=leg_from_payload(payload.get("transit")),
         )

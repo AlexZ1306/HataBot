@@ -1,7 +1,7 @@
 import pytest
 
 from hata_bot.exceptions import NotificationError
-from hata_bot.models import Listing, TelegramConfig
+from hata_bot.models import CommuteLeg, Listing, SchoolCommute, TelegramConfig
 from hata_bot.notifiers.telegram import TelegramNotifier, build_new_listing_message
 
 
@@ -33,9 +33,28 @@ def test_build_new_listing_message_contains_key_fields() -> None:
     assert "80 000 ₽" in message
     assert "3 комн." in message
     assert "104,4 м²" in message
-    assert "ул. Орджоникидзе, 47" in message
+    assert "Адрес: ул. Орджоникидзе, 47" in message
     assert "🔥 Собственник: Александр" in message
-    assert "В выдаче: 1 час назад" in message
+    assert "На сайте: 1 час назад" in message
+
+
+def test_build_new_listing_message_includes_school_commute_when_available() -> None:
+    listing = make_listing()
+    listing.school_commute = SchoolCommute(
+        destination_name="Школа ребенка",
+        reference_text="Будний день, 07:30",
+        walking=CommuteLeg(duration_sec=18 * 60, distance_m=1300),
+        driving=CommuteLeg(duration_sec=11 * 60, distance_m=4700),
+        transit=CommuteLeg(duration_sec=27 * 60, distance_m=6200),
+    )
+
+    message = build_new_listing_message(listing, poll_note="Авито test")
+
+    assert "До школы:" in message
+    assert "Пешком: 18 мин • 1,3 км" in message
+    assert "На машине: 11 мин • 4,7 км" in message
+    assert "На транспорте: 27 мин • 6,2 км" in message
+    assert "Расчёт: Будний день, 07:30" in message
 
 
 def test_send_new_listing_raises_on_telegram_api_error() -> None:

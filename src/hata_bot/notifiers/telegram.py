@@ -5,13 +5,14 @@ import json
 import mimetypes
 from datetime import datetime, timezone
 from html import escape
+import math
 
 import requests
 
 from hata_bot.exceptions import ConfigError, NotificationError
 from hata_bot.fingerprints import format_area, format_price
 from hata_bot.http import build_session
-from hata_bot.models import Listing, TelegramConfig
+from hata_bot.models import CommuteLeg, Listing, SchoolCommute, TelegramConfig
 from hata_bot.notifiers.base import Notifier
 
 
@@ -204,27 +205,35 @@ def build_new_listing_message(listing: Listing, *, poll_note: str | None = None)
     parts: list[str] = []
     if poll_note:
         parts.append(f"<b>{escape(poll_note)}</b>")
-    parts.append(f"<a href=\"{escape(listing.url, quote=True)}\">{escape(listing.title)}</a>")
+    parts.append(f"<a href=\"{escape(listing.url, quote=True)}\"><b>{escape(listing.title)}</b></a>")
 
-    meta = [format_price(listing.price_rub)]
+    price_text = format_price(listing.price_rub)
+    parts.append(f"Цена: <b>{price_text}</b>")
+
+    size_meta: list[str] = []
     if listing.rooms is not None:
-        meta.append(f"{listing.rooms} комн.")
+        size_meta.append(f"{listing.rooms} комн.")
     if listing.area_m2 is not None:
-        meta.append(f"{format_area(listing.area_m2)} м²")
-    parts.append(" • ".join(meta))
+        size_meta.append(f"{format_area(listing.area_m2)} м²")
+    if size_meta:
+        parts.append(f"Параметры: {' • '.join(size_meta)}")
 
     if listing.address:
-        parts.append(escape(listing.address))
-    district = listing.raw_payload.get("district") if isinstance(listing.raw_payload, dict) else None
-    if district:
-        parts.append(f"Район: {escape(str(district))}")
+        parts.append(f"Адрес: {escape(listing.address)}")
+
+    district_line = _build_district_line(listing)
+    if district_line:
+        parts.append(district_line)
     if listing.metro:
-        parts.append(escape(listing.metro))
+        parts.append(f"Метро: {escape(listing.metro)}")
     seller_line = _build_seller_line(listing)
     if seller_line:
         parts.append(seller_line)
+    commute_lines = _build_school_commute_lines(listing.school_commute)
+    if commute_lines:
+        parts.extend(commute_lines)
     if listing.published_text:
-        parts.append(f"В выдаче: {escape(listing.published_text)}")
+        parts.append(f"На сайте: {escape(listing.published_text)}")
 
     return "\n".join(parts)
 
@@ -232,24 +241,33 @@ def build_new_listing_message(listing: Listing, *, poll_note: str | None = None)
 def build_listings_digest_message(listings: list[Listing], *, title: str) -> str:
     parts = [f"<b>{escape(title)}</b>"]
     for index, listing in enumerate(listings, start=1):
-        lines = [f"{index}. <a href=\"{escape(listing.url, quote=True)}\">{escape(listing.title)}</a>"]
+        lines = [f"{index}. <a href=\"{escape(listing.url, quote=True)}\"><b>{escape(listing.title)}</b></a>"]
 
-        meta = [format_price(listing.price_rub)]
+        lines.append(f"Цена: <b>{format_price(listing.price_rub)}</b>")
+
+        size_meta: list[str] = []
         if listing.rooms is not None:
-            meta.append(f"{listing.rooms} комн.")
+            size_meta.append(f"{listing.rooms} комн.")
         if listing.area_m2 is not None:
-            meta.append(f"{format_area(listing.area_m2)} м²")
-        lines.append(" • ".join(meta))
+            size_meta.append(f"{format_area(listing.area_m2)} м²")
+        if size_meta:
+            lines.append(f"Параметры: {' • '.join(size_meta)}")
 
         if listing.address:
-            lines.append(escape(listing.address))
+            lines.append(f"Адрес: {escape(listing.address)}")
+        district_line = _build_district_line(listing)
+        if district_line:
+            lines.append(district_line)
         if listing.metro:
-            lines.append(escape(listing.metro))
+            lines.append(f"Метро: {escape(listing.metro)}")
         seller_line = _build_seller_line(listing)
         if seller_line:
             lines.append(seller_line)
+        commute_lines = _build_school_commute_lines(listing.school_commute)
+        if commute_lines:
+            lines.extend(commute_lines)
         if listing.published_text:
-            lines.append(f"В выдаче: {escape(listing.published_text)}")
+            lines.append(f"На сайте: {escape(listing.published_text)}")
 
         parts.append("\n".join(lines))
 
@@ -288,3 +306,63 @@ def _build_seller_line(listing: Listing) -> str | None:
     if seller_name:
         return f"Продавец: {escape(seller_name)}"
     return None
+
+
+def _build_school_commute_lines(school_commute: SchoolCommute | None) -> list[str]:
+    if school_commute is None:
+        return []
+
+    lines = ["До школы:"]
+    if school_commute.walking:
+        lines.append(f"Пешком: {_format_leg(school_commute.walking)}")
+    if school_commute.driving:
+        lines.append(f"На машине: {_format_leg(school_commute.driving)}")
+    if school_commute.transit:
+        lines.append(f"На транспорте: {_format_leg(school_commute.transit)}")
+    if school_commute.reference_text and (school_commute.driving or school_commute.transit):
+        lines.append(f"Расчёт: {escape(school_commute.reference_text)}")
+
+    return lines if len(lines) > 1 else []
+
+
+def _build_district_line(listing: Listing) -> str | None:
+    raw_payload = listing.raw_payload if isinstance(listing.raw_payload, dict) else {}
+    district = raw_payload.get("district")
+    if not district:
+        return None
+
+    district_text = str(district).strip()
+    lowered = district_text.casefold()
+    if lowered.startswith("р-н "):
+        district_text = district_text[4:].strip()
+    elif lowered.startswith("район "):
+        district_text = district_text[6:].strip()
+
+    if not district_text:
+        return None
+    return f"Район: {escape(district_text)}"
+
+
+def _format_leg(leg: CommuteLeg) -> str:
+    parts = [_format_duration(leg.duration_sec)]
+    if leg.distance_m is not None:
+        parts.append(_format_distance(leg.distance_m))
+    return " • ".join(parts)
+
+
+def _format_duration(duration_sec: int) -> str:
+    minutes = max(1, math.ceil(duration_sec / 60))
+    if minutes < 60:
+        return f"{minutes} мин"
+    hours = minutes // 60
+    rem_minutes = minutes % 60
+    if rem_minutes == 0:
+        return f"{hours} ч"
+    return f"{hours} ч {rem_minutes} мин"
+
+
+def _format_distance(distance_m: int) -> str:
+    if distance_m < 1000:
+        return f"{distance_m} м"
+    kilometers = distance_m / 1000
+    return f"{kilometers:.1f}".replace(".", ",") + " км"

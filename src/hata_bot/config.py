@@ -7,7 +7,7 @@ import yaml
 from dotenv import load_dotenv
 
 from hata_bot.exceptions import ConfigError
-from hata_bot.models import AppConfig, Settings, SourceConfig, TelegramConfig
+from hata_bot.models import AppConfig, SchoolCommuteConfig, Settings, SourceConfig, TelegramConfig
 
 
 def load_settings(config_path: str | Path = "config/config.yaml", env_path: str | Path | None = None) -> Settings:
@@ -24,6 +24,7 @@ def load_settings(config_path: str | Path = "config/config.yaml", env_path: str 
     app_cfg = raw.get("app", {})
     notifications_cfg = raw.get("notifications", {})
     telegram_cfg = notifications_cfg.get("telegram", {})
+    school_commute_cfg = raw.get("school_commute", {})
     raw_sources = raw.get("sources", [])
 
     if not isinstance(raw_sources, list) or not raw_sources:
@@ -48,12 +49,13 @@ def load_settings(config_path: str | Path = "config/config.yaml", env_path: str 
         chat_id=_resolve_primary_chat_id(),
         chat_ids=_resolve_chat_ids(),
     )
+    school_commute = _parse_school_commute_config(school_commute_cfg)
 
     sources = [_parse_source(item) for item in raw_sources]
     if not any(source.enabled for source in sources):
         raise ConfigError("At least one source must be enabled.")
 
-    return Settings(app=app, telegram=telegram, sources=sources)
+    return Settings(app=app, telegram=telegram, sources=sources, school_commute=school_commute)
 
 
 def ensure_directories(settings: Settings) -> None:
@@ -143,6 +145,37 @@ def _parse_source(raw_source: dict) -> SourceConfig:
     )
 
 
+def _parse_school_commute_config(raw_school_commute: dict) -> SchoolCommuteConfig:
+    if raw_school_commute is None:
+        raw_school_commute = {}
+    if not isinstance(raw_school_commute, dict):
+        raise ConfigError("school_commute must be a mapping.")
+
+    config = SchoolCommuteConfig(
+        enabled=bool(raw_school_commute.get("enabled", False)),
+        api_key=_read_env("HATABOT_2GIS_API_KEY"),
+        origin_city_name=_optional_str(raw_school_commute.get("origin_city_name")),
+        destination_name=_optional_str(raw_school_commute.get("destination_name")) or "Школа",
+        destination_address=_optional_str(raw_school_commute.get("destination_address")),
+        destination_lat=_optional_float(raw_school_commute.get("destination_lat")),
+        destination_lon=_optional_float(raw_school_commute.get("destination_lon")),
+        departure_time_local=_optional_str(raw_school_commute.get("departure_time_local")) or "07:30",
+        cache_ttl_hours=int(raw_school_commute.get("cache_ttl_hours", 168)),
+        request_timeout_sec=int(raw_school_commute.get("request_timeout_sec", 12)),
+    )
+
+    if config.cache_ttl_hours < 1:
+        raise ConfigError("school_commute.cache_ttl_hours must be >= 1.")
+    if config.request_timeout_sec < 5:
+        raise ConfigError("school_commute.request_timeout_sec must be >= 5.")
+    if not _looks_like_hhmm(config.departure_time_local):
+        raise ConfigError("school_commute.departure_time_local must look like HH:MM.")
+    if config.enabled and (config.destination_lat is None or config.destination_lon is None):
+        raise ConfigError("school_commute.destination_lat and destination_lon are required when school_commute is enabled.")
+
+    return config
+
+
 def _read_env(name: str) -> str | None:
     import os
 
@@ -189,6 +222,13 @@ def _optional_float(value) -> float | None:
     return float(value)
 
 
+def _optional_str(value) -> str | None:
+    if value is None:
+        return None
+    stripped = str(value).strip()
+    return stripped or None
+
+
 def _resolve_path(project_root: Path, value: str | Path) -> Path:
     path = Path(value)
     if path.is_absolute():
@@ -205,3 +245,12 @@ def _infer_project_root(config_file: Path) -> Path:
 def _looks_like_url(value: str) -> bool:
     parsed = urlparse(value)
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def _looks_like_hhmm(value: str) -> bool:
+    parts = value.split(":", 1)
+    if len(parts) != 2 or not parts[0].isdigit() or not parts[1].isdigit():
+        return False
+    hours = int(parts[0])
+    minutes = int(parts[1])
+    return 0 <= hours <= 23 and 0 <= minutes <= 59

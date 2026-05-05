@@ -22,6 +22,7 @@ class Listing:
     seller_name: str | None = None
     image_url: str | None = None
     photo_urls: list[str] = field(default_factory=list)
+    school_commute: SchoolCommute | None = None
     raw_payload: dict[str, Any] = field(default_factory=dict)
 
 
@@ -55,6 +56,35 @@ class TelegramConfig:
 
 
 @dataclass(slots=True)
+class CommuteLeg:
+    duration_sec: int
+    distance_m: int | None = None
+
+
+@dataclass(slots=True)
+class SchoolCommute:
+    destination_name: str
+    reference_text: str | None = None
+    walking: CommuteLeg | None = None
+    driving: CommuteLeg | None = None
+    transit: CommuteLeg | None = None
+
+
+@dataclass(slots=True)
+class SchoolCommuteConfig:
+    enabled: bool = False
+    api_key: str | None = None
+    origin_city_name: str | None = None
+    destination_name: str = "Школа"
+    destination_address: str | None = None
+    destination_lat: float | None = None
+    destination_lon: float | None = None
+    departure_time_local: str = "07:30"
+    cache_ttl_hours: int = 168
+    request_timeout_sec: int = 12
+
+
+@dataclass(slots=True)
 class SearchProfile:
     city_name: str
     districts: list[str] = field(default_factory=list)
@@ -79,6 +109,7 @@ class Settings:
     app: AppConfig
     telegram: TelegramConfig
     sources: list[SourceConfig]
+    school_commute: SchoolCommuteConfig | None = None
 
 
 @dataclass(slots=True)

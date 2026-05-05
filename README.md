@@ -39,6 +39,7 @@ Copy-Item .env.example .env
 
 4. Fill in `HATABOT_TELEGRAM_BOT_TOKEN` and `HATABOT_TELEGRAM_CHAT_ID` in `.env`.
    If the bot should work for several family members, add them to `HATABOT_TELEGRAM_CHAT_IDS` as a comma-separated list.
+   If you want cards to show commute to school, also add `HATABOT_2GIS_API_KEY`.
 
 5. Review `config/config.yaml`.
    By default it already contains `Авито`, `ЦИАН`, and `Домклик`.
@@ -94,6 +95,7 @@ Then open your bot in Telegram and send `/start`.
 - The current Avito implementation reads the search listing page only and does not open each listing separately.
 - The current Cian implementation uses a real local Chrome/Edge window via DevTools Protocol because direct HTTP access is blocked by Cian WAF. The window starts minimized and off-screen.
 - The current Domclick implementation also uses a real local Chrome/Edge window via DevTools Protocol because direct HTTP access is blocked by Domclick protection.
+- School commute in cards is optional and uses 2GIS Geocoder + Routing APIs with a local cache. Without `HATABOT_2GIS_API_KEY`, cards are still sent, just without school travel times.
 - Cian can be filtered further in code using `required_districts` and `exclude_text_patterns` from `config/config.yaml`.
 - Domclick can be filtered further in code using `required_districts` from `config/config.yaml`.
 - Domclick currently monitors the provided search URL as-is. A stable public URL parameter for strict "newest first" sorting was not confirmed, so HataBot checks several pages and then sorts matched cards by listing timestamps on its side.
